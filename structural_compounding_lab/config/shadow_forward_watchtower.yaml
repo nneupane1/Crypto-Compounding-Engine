@@ -1,0 +1,27 @@
+# Research-only 90-day shadow-forward watchtower config
+research_only: true
+real_money_allowed: false
+paper_allowed: false
+live_allowed: false
+behavior_change_allowed: false
+no_order_path_allowed: true
+symbol: "BTCUSDT"
+execution_timeframe: "1H"
+context_timeframe: "6H"
+observation_days_required: 90
+minimum_1h_decisions_required: 50
+signal_reproduction_accuracy_required: 0.99
+median_close_delay_seconds_max: 120
+data_gap_rate_max: 0.01
+max_unexplained_missed_signals: 0
+default_mode: "single_cycle"
+append_only_ledgers: true
+force_rerun_default: false
+allow_source_csv: true
+allow_public_market_data_stub: false
+allow_private_api_keys: false
+allow_order_endpoints: false
+reports_enabled: true
+daily_report_enabled: true
+weekly_report_enabled: true
+cumulative_report_enabled: true

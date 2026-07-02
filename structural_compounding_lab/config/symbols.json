@@ -1,0 +1,13 @@
+{
+  "primary": [
+    "BTCUSDT"
+  ],
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "AVAXUSDT",
+    "BNBUSDT"
+  ],
+  "notes": "This universe is for future structural-compounding research only. It does not alter the active routed stack."
+}

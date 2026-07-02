@@ -1,0 +1,89 @@
+services:
+  runtime:
+    build:
+      context: ..
+      dockerfile: deploy/python.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      RTS_PROJECT_ROOT: /app
+      RTS_RUNTIME_OUTPUT_ROOT: /app/structural_compounding_lab/output/multi_symbol_forward_runtime_earned_parallel_slots
+      RTS_DATA_ROOT: /app/data_storage
+      RTS_SCHEDULER_INTERVAL_SECONDS: ${RTS_SCHEDULER_INTERVAL_SECONDS:-300}
+      RTS_RUN_AT_START: ${RTS_RUN_AT_START:-true}
+      BINANCE_API_KEY: ""
+      BINANCE_API_SECRET: ""
+    volumes:
+      - rts_output:/app/structural_compounding_lab/output
+      - rts_data:/app/data_storage
+    command: ["python", "-m", "production_runtime.scheduler_loop"]
+
+  dashboard-api:
+    build:
+      context: ..
+      dockerfile: deploy/python.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      RTS_PROJECT_ROOT: /app
+      RTS_RUNTIME_OUTPUT_ROOT: /app/structural_compounding_lab/output/multi_symbol_forward_runtime_earned_parallel_slots
+      RTS_DEMO_OUTPUT_ROOT: /app/structural_compounding_lab/output/binance_demo_walk_forward_six_month_court_001
+      RTS_DASHBOARD_PUBLIC_VISUAL_EXTENSION: ${RTS_DASHBOARD_PUBLIC_VISUAL_EXTENSION:-true}
+    volumes:
+      - rts_output:/app/structural_compounding_lab/output:ro
+    ports:
+      - "${RTS_DASHBOARD_API_BIND:-127.0.0.1:8000}:8000"
+    command: ["uvicorn", "production_api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  dashboard:
+    build:
+      context: ..
+      dockerfile: deploy/dashboard.Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DASHBOARD_API_URL: http://dashboard-api:8000
+      NEXT_PUBLIC_DASHBOARD_API_URL: /dashboard-api
+    depends_on:
+      - dashboard-api
+    ports:
+      - "${RTS_DASHBOARD_BIND:-127.0.0.1:3000}:3000"
+
+  demo-testnet:
+    profiles: ["demo"]
+    build:
+      context: ..
+      dockerfile: deploy/python.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      RTS_PROJECT_ROOT: /app
+      BINANCE_DEMO_MODE: spot_testnet
+      BINANCE_DEMO_API_TEST_CONFIRM: YES_TESTNET_ONLY
+      WALK_FORWARD_DEMO_EXECUTION_ENABLED: ${WALK_FORWARD_DEMO_EXECUTION_ENABLED:-false}
+      WALK_FORWARD_DEMO_SYMBOL_ALLOWLIST: ADAUSDT,LINKUSDT,BNBUSDT,XRPUSDT,AVAXUSDT,DOGEUSDT,ETHUSDT,BTCUSDT,SOLUSDT
+      RTS_DEMO_EMAIL_SUBJECT_PREFIX: RTS CLOUD BINANCE SPOT TESTNET DEMO LONG-ONLY
+      BINANCE_API_KEY: ""
+      BINANCE_API_SECRET: ""
+    volumes:
+      - rts_output:/app/structural_compounding_lab/output
+    command:
+      - python
+      - -m
+      - structural_compounding_lab.execution.demo_walk_forward_six_hour_supervisor
+      - --duration-seconds
+      - "15552000"
+      - --interval-seconds
+      - "300"
+      - --output-dir
+      - structural_compounding_lab/output/binance_demo_walk_forward_six_month_court_001
+      - --source-ledger
+      - structural_compounding_lab/output/multi_symbol_forward_runtime_earned_parallel_slots/ledger/multi_symbol_forward_decision_ledger.csv
+
+volumes:
+  rts_output:
+  rts_data:
+

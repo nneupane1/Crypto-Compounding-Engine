@@ -1,0 +1,97 @@
+{
+  "lab_name": "Structural Compounding Lab Fixture Research",
+  "research_only": true,
+  "read_only_frontend": true,
+  "symbol": "BTCUSDT",
+  "execution_timeframe": "15m",
+  "confirmation_timeframes": ["1h", "4h"],
+  "visual_timeframes": ["15m", "1h", "4h"],
+  "data": {
+    "base_path": "../data_storage",
+    "default_interval": "1m",
+    "history_start_date": "2026-01-01",
+    "history_end_date": "2026-01-02",
+    "analysis_start_date": null,
+    "analysis_end_date": null
+  },
+  "engine": {
+    "structure_window_bars": 64,
+    "liquidity_window_bars": 48,
+    "setup_window_bars": 32,
+    "resume_enabled": true,
+    "checkpoint_every_bars": 16,
+    "write_partial_artifacts": true
+  },
+  "risk": {
+    "risk_per_trade_pct": 0.01,
+    "max_concurrent_positions": 1,
+    "max_hold_bars": 24,
+    "minimum_rr": 1.05
+  },
+  "base_capital": 20000.0,
+  "ema": {"fast": 3, "mid": 5, "slow": 8},
+  "atr": {"period": 3, "shock_multiple": 2.0},
+  "sr": {
+    "pivot_left": 1,
+    "pivot_right": 1,
+    "touch_tolerance_pct": 0.003,
+    "rolling_range_bars": 12,
+    "zone_width_pct": 0.002
+  },
+  "liquidity": {
+    "equal_level_tolerance_pct": 0.002,
+    "sweep_lookback_bars": 6,
+    "reclaim_tolerance_pct": 0.001
+  },
+  "momentum_personality": {
+    "enabled": true,
+    "research_only": true,
+    "hard_gate": false
+  },
+  "pullback_research": {
+    "enabled": true,
+    "research_only": true,
+    "micro_pullback_lower_timeframe": "1m",
+    "fallback_lower_timeframe": "1m",
+    "micro_max_depth_atr": 0.8,
+    "healthy_max_depth_atr": 1.8,
+    "deep_max_depth_atr": 2.6
+  },
+  "setup": {
+    "recent_liquidity_bars": 8,
+    "max_level_distance_atr": 1.4,
+    "min_level_strength": 0.8,
+    "target_buffer_atr": 0.15,
+    "fallback_without_liquidity": true
+  },
+  "pyramiding": {
+    "enabled": true,
+    "max_add_ons": 1,
+    "add_on_trigger_r": 0.8,
+    "size_fraction": 0.2
+  },
+  "convexity": {
+    "enabled": true,
+    "min_risk_multiplier": 0.7,
+    "max_risk_multiplier": 1.2,
+    "strong_score_threshold": 3.4,
+    "elite_score_threshold": 3.9
+  },
+  "cooldown": {
+    "enabled": true,
+    "bars": 2,
+    "minimum_bars": 1,
+    "requires_danger_clear": false,
+    "fast_resume_score": 3.25
+  },
+  "profit_vault": {
+    "enabled": true,
+    "lock_on_danger": true,
+    "reset_active_capital_to_base": true,
+    "minimum_lock_profit": 0.0,
+    "lock_after_r": 0.8
+  },
+  "output": {
+    "path": "output"
+  }
+}

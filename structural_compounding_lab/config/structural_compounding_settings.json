@@ -1,0 +1,113 @@
+{
+  "lab_name": "Structural Compounding Lab",
+  "research_only": true,
+  "read_only_frontend": true,
+  "symbol": "BTCUSDT",
+  "execution_timeframe": "1h",
+  "confirmation_timeframes": [
+    "12h",
+    "1d",
+    "1w"
+  ],
+  "visual_timeframes": [
+    "1h",
+    "4h",
+    "12h",
+    "1d"
+  ],
+  "data": {
+    "base_path": "../data_storage",
+    "default_interval": "1m",
+    "history_start_date": "2018-01-01",
+    "history_end_date": "2026-06-13",
+    "analysis_start_date": null,
+    "analysis_end_date": null
+  },
+  "engine": {
+    "structure_window_bars": 240,
+    "liquidity_window_bars": 160,
+    "setup_window_bars": 96,
+    "resume_enabled": true,
+    "checkpoint_every_bars": 250,
+    "write_partial_artifacts": true
+  },
+  "risk": {
+    "risk_per_trade_pct": 0.01,
+    "max_concurrent_positions": 1,
+    "max_hold_bars": 72,
+    "minimum_rr": 1.5
+  },
+  "base_capital": 20000.0,
+  "ema": {
+    "fast": 20,
+    "mid": 50,
+    "slow": 200
+  },
+  "atr": {
+    "period": 14,
+    "shock_multiple": 2.4
+  },
+  "sr": {
+    "pivot_left": 3,
+    "pivot_right": 3,
+    "touch_tolerance_pct": 0.002,
+    "rolling_range_bars": 48,
+    "zone_width_pct": 0.0015
+  },
+  "liquidity": {
+    "equal_level_tolerance_pct": 0.0012,
+    "sweep_lookback_bars": 20,
+    "reclaim_tolerance_pct": 0.0008
+  },
+  "momentum_personality": {
+    "enabled": true,
+    "research_only": true,
+    "hard_gate": false
+  },
+  "pullback_research": {
+    "enabled": true,
+    "research_only": true,
+    "micro_pullback_lower_timeframe": "5m",
+    "fallback_lower_timeframe": "1m",
+    "micro_max_depth_atr": 0.8,
+    "healthy_max_depth_atr": 1.6,
+    "deep_max_depth_atr": 2.6
+  },
+  "setup": {
+    "recent_liquidity_bars": 16,
+    "max_level_distance_atr": 1.25,
+    "min_level_strength": 1.0,
+    "target_buffer_atr": 0.2,
+    "fallback_without_liquidity": true
+  },
+  "pyramiding": {
+    "enabled": true,
+    "max_add_ons": 2,
+    "add_on_trigger_r": 1.0,
+    "size_fraction": 0.25
+  },
+  "convexity": {
+    "enabled": true,
+    "min_risk_multiplier": 0.7,
+    "max_risk_multiplier": 1.35,
+    "strong_score_threshold": 3.6,
+    "elite_score_threshold": 4.1
+  },
+  "cooldown": {
+    "enabled": true,
+    "bars": 6,
+    "minimum_bars": 2,
+    "requires_danger_clear": true,
+    "fast_resume_score": 3.55
+  },
+  "profit_vault": {
+    "enabled": true,
+    "lock_on_danger": true,
+    "reset_active_capital_to_base": true,
+    "minimum_lock_profit": 0.0,
+    "lock_after_r": 1.1
+  },
+  "output": {
+    "path": "output"
+  }
+}

@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "structural-compounding-lab"
+version = "0.1.0"
+description = "Read-only research lab for support/resistance and liquidity-driven compounding studies."
+requires-python = ">=3.11"
+dependencies = [
+  "pandas",
+  "PyYAML"
+]
+
+[tool.setuptools.packages.find]
+include = ["structural_compounding_lab*"]

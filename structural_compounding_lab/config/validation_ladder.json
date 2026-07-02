@@ -1,0 +1,131 @@
+{
+  "name": "structural_compounding_lab_validation_ladder_v2",
+  "research_only": true,
+  "btc_first": true,
+  "auto_run_expensive_stages": false,
+  "promotion_policy": {
+    "btc_first": true,
+    "multi_symbol_requires_btc_success": true,
+    "full_history_required_before_promotion": true,
+    "paper_candidate_requires_manual_review": true,
+    "automatic_promotion": false
+  },
+  "stages": [
+    {
+      "stage": "plan_spec",
+      "symbol_scope": [
+        "BTCUSDT"
+      ],
+      "auto_run": false
+    },
+    {
+      "stage": "unit_tests",
+      "symbol_scope": [
+        "BTCUSDT"
+      ],
+      "auto_run": false
+    },
+    {
+      "stage": "smoke_window",
+      "symbol_scope": [
+        "BTCUSDT"
+      ],
+      "start": "2026-05-31",
+      "end": "2026-06-13",
+      "auto_run": false
+    },
+    {
+      "stage": "diagnostic_fast_window",
+      "symbol_scope": [
+        "BTCUSDT"
+      ],
+      "start": "2025-12-14",
+      "end": "2026-06-13",
+      "auto_run": false
+    },
+    {
+      "stage": "stress_bull_window",
+      "symbol_scope": [
+        "BTCUSDT"
+      ],
+      "start": "2020-10-01",
+      "end": "2021-05-31",
+      "auto_run": false
+    },
+    {
+      "stage": "stress_bear_window",
+      "symbol_scope": [
+        "BTCUSDT"
+      ],
+      "start": "2022-04-01",
+      "end": "2022-07-31",
+      "auto_run": false
+    },
+    {
+      "stage": "stress_chop_window",
+      "symbol_scope": [
+        "BTCUSDT"
+      ],
+      "start": "2024-10-01",
+      "end": "2025-03-31",
+      "auto_run": false
+    },
+    {
+      "stage": "recent_holdout",
+      "symbol_scope": [
+        "BTCUSDT"
+      ],
+      "start": "2025-06-14",
+      "end": "2026-06-13",
+      "auto_run": false
+    },
+    {
+      "stage": "execution_cost_sensitivity",
+      "symbol_scope": [
+        "BTCUSDT"
+      ],
+      "auto_run": false
+    },
+    {
+      "stage": "full_history_confirmation",
+      "symbol_scope": [
+        "BTCUSDT"
+      ],
+      "start": "2018-01-01",
+      "end": "2026-06-13",
+      "auto_run": false
+    },
+    {
+      "stage": "monte_carlo",
+      "symbol_scope": [
+        "BTCUSDT"
+      ],
+      "auto_run": false
+    },
+    {
+      "stage": "paper_candidate_later",
+      "symbol_scope": [
+        "BTCUSDT"
+      ],
+      "auto_run": false
+    },
+    {
+      "stage": "manual_promotion_review",
+      "symbol_scope": [
+        "BTCUSDT"
+      ],
+      "auto_run": false
+    },
+    {
+      "stage": "optional_multi_symbol_expansion",
+      "symbol_scope": [
+        "ETHUSDT",
+        "SOLUSDT",
+        "AVAXUSDT",
+        "BNBUSDT"
+      ],
+      "auto_run": false,
+      "blocked_until": "BTC-only evidence survives holdout, stress windows, and execution-cost sensitivity."
+    }
+  ]
+}

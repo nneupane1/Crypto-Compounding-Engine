@@ -1,0 +1,8 @@
+fastapi
+numpy
+pandas
+PyYAML
+requests
+rich
+uvicorn[standard]
+
