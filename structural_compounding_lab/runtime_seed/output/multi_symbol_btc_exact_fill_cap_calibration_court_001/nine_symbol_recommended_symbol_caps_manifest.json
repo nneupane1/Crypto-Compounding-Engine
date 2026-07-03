@@ -40,8 +40,8 @@
   "research_only": true,
   "signed_endpoint_used": false,
   "sizing_changed": false,
-  "source_btc_exact_fill_summary": "/Users/mac/Documents/Retail-Trading-System/structural_compounding_lab/output/multi_symbol_btc_exact_fill_cap_calibration_court_001/multi_symbol_btc_exact_fill_cap_calibration_summary.json",
-  "source_eight_symbol_exact_fill_summary": "/Users/mac/Documents/Retail-Trading-System/structural_compounding_lab/output/multi_symbol_exact_fill_symbol_cap_calibration_court_001/multi_symbol_exact_fill_symbol_cap_calibration_summary.json",
+  "source_btc_exact_fill_summary": "structural_compounding_lab/output/multi_symbol_btc_exact_fill_cap_calibration_court_001/multi_symbol_btc_exact_fill_cap_calibration_summary.json",
+  "source_eight_symbol_exact_fill_summary": "structural_compounding_lab/output/multi_symbol_exact_fill_symbol_cap_calibration_court_001/multi_symbol_exact_fill_symbol_cap_calibration_summary.json",
   "strategy_logic_changed": false,
   "thresholds_tuned": false
 }

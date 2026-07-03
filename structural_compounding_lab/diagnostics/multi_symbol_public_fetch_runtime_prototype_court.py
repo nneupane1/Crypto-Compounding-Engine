@@ -203,7 +203,7 @@ def _public_klines(symbol: str, limit: int, *, start_ms: int | None = None) -> l
     if start_ms is not None:
         params["startTime"] = start_ms
     url = f"{BINANCE_BASE_URL}/api/v3/klines?{urllib.parse.urlencode(params)}"
-    request = urllib.request.Request(url, headers={"User-Agent": "Retail-Trading-System-Research-Court/1.0"})
+    request = urllib.request.Request(url, headers={"User-Agent": "Crypto-Compounding-Engine-Research-Court/1.0"})
     with urllib.request.urlopen(request, timeout=15) as response:
         payload = json.loads(response.read().decode("utf-8"))
     rows: list[dict[str, Any]] = []

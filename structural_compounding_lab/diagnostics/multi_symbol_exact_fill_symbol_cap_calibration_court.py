@@ -132,7 +132,7 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _http_json(url: str, *, timeout: float = 10.0) -> dict[str, Any]:
-    request = urllib.request.Request(url, headers={"User-Agent": "Retail-Trading-System-Research-Court/1.0"})
+    request = urllib.request.Request(url, headers={"User-Agent": "Crypto-Compounding-Engine-Research-Court/1.0"})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 

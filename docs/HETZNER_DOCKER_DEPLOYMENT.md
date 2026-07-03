@@ -24,8 +24,8 @@ sudo usermod -aG docker "$USER"
 Clone and start:
 
 ```bash
-git clone <NEW_PRODUCTION_REPO_URL> Retail-Trading-System-Production
-cd Retail-Trading-System-Production
+git clone <NEW_PRODUCTION_REPO_URL> Crypto-Compounding-Engine
+cd Crypto-Compounding-Engine
 cp .env.example .env
 docker compose -f deploy/docker-compose.prod.yml build
 docker compose -f deploy/docker-compose.prod.yml up -d runtime dashboard-api dashboard

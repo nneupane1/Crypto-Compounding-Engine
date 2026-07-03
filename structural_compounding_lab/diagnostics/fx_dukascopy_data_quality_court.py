@@ -166,7 +166,7 @@ def _decode_bi5_candles(raw: bytes, *, symbol: str, day: date, side: str) -> pd.
 
 
 def _http_get(url: str, *, timeout_seconds: int, retries: int) -> tuple[bytes, str]:
-    headers = {"User-Agent": "Retail-Trading-System-FX-Research/1.0"}
+    headers = {"User-Agent": "Crypto-Compounding-Engine-FX-Research/1.0"}
     last_error = ""
     for attempt in range(1, retries + 1):
         try:

@@ -3,13 +3,13 @@
 Source workspace:
 
 ```text
-/Users/mac/Documents/Retail-Trading-System
+local research workspace, not shipped to production
 ```
 
 Production extraction workspace:
 
 ```text
-/Users/mac/Documents/Retail-Trading-System-Production
+local production extraction workspace, copied to the cloud runtime root
 ```
 
 ## Included
