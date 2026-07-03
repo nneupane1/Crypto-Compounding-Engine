@@ -482,8 +482,6 @@ def run_once(root: Path, *, symbol: str) -> dict[str, Any]:
     client = BinanceLiveSpotClient(config)
     exchange_info = client.exchange_info(limits.symbol)
     rules = parse_symbol_rules(exchange_info, limits.symbol)
-    if rules.quote_asset.upper() != "USDT":
-        raise BinanceLiveSpotSafetyError("Tiny live smoke currently supports USDT-quoted spot pairs only")
     price = client.ticker_price(limits.symbol)
     quantity = quantity_for_notional(limits.max_order_notional_eur, price, rules)
     estimated_notional = quantity * price
@@ -589,7 +587,8 @@ def run_once(root: Path, *, symbol: str) -> dict[str, Any]:
             "This was NOT the production strategy scheduler.",
             "",
             f"Symbol: {limits.symbol}",
-            f"Max order cap: {decimal_to_plain(limits.max_order_notional_eur)} EUR/USDT equivalent",
+            f"Quote asset: {rules.quote_asset}",
+            f"Max order cap: {decimal_to_plain(limits.max_order_notional_eur)} quote units",
             f"Max test budget: {decimal_to_plain(limits.max_test_budget_eur)} EUR",
             f"BUY order id: {buy_response.get('orderId', '')}",
             f"SELL order id: {sell_response.get('orderId', '')}",
