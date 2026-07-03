@@ -28,6 +28,7 @@ The active production runtime is:
 - frozen long-only multi-symbol scanner evaluation;
 - output-only research/shadow-forward PnL ledgering;
 - optional Binance Spot Testnet demo execution bridge;
+- guarded Binance Spot mainnet tiny-smoke harness for execution plumbing only;
 - lightweight read-only dashboard API and Next.js production dashboard.
 
 Safety defaults:
@@ -82,3 +83,24 @@ docker compose -f deploy/docker-compose.prod.yml --profile demo up -d demo-testn
 
 Do not add production/mainnet keys until a separate live-trading approval and
 preflight gate exists.
+
+## Tiny live Spot smoke
+
+The tiny live smoke harness is isolated behind the `live-smoke` Docker Compose
+profile. It is not connected to the strategy scheduler and does not approve full
+live trading.
+
+Read the runbook before using it:
+
+`docs/LIVE_TINY_SMOKE_RUNBOOK.md`
+
+Default hard caps:
+
+- max account capital for the smoke: `€1,000`
+- max test budget: `€50`
+- max single order notional: `€10`
+- max daily loss cap: `€15`
+- Spot only, no margin, no futures, no short selling, no withdrawal code
+
+The harness accepts only dedicated `BINANCE_LIVE_SMOKE_*` keys. Generic live
+keys and demo/testnet keys are rejected.
