@@ -1,0 +1,35 @@
+{
+  "frozen_patch_candidate": "BAD_LONGS_DISABLED_ONLY_PROVEN_SHORTS_KEPT",
+  "source_best_patch_candidate": "BAD_LONGS_DISABLED_ONLY_PROVEN_SHORTS_KEPT",
+  "source_recommendation": "PRESERVE_PROVEN_SHORTS_ONLY",
+  "disabled_long_failure_modes": [
+    "LONG_COST_DOMINATED",
+    "LONG_COUNTER_HTF",
+    "LONG_DANGER_TOO_HIGH",
+    "LONG_EMA_FAKEOUT",
+    "LONG_OVERHEAD_RESISTANCE_TOO_CLOSE",
+    "LONG_TINY_STOP_TRAP",
+    "LONG_VWAP_FAKEOUT",
+    "LONG_WEAK_RECLAIM"
+  ],
+  "short_bucket_rule": {
+    "trade_count_min": 20,
+    "total_R_gt": 0.0,
+    "profit_factor_gt": 1.1,
+    "avg_R_gt": 0.0,
+    "matched_archetype_keys": [
+      "short|sweep_high|elite_convexity|resistance|equal_highs"
+    ]
+  },
+  "long_bucket_rule": {
+    "selection_mode": "keep_longs_not_in_disabled_failure_modes",
+    "no_new_logic_added": true
+  },
+  "frozen_without_retuning": true,
+  "migration_recovery_note": "Recovered from the repeated frozen-rule regression contract after the original ignored Windows discovery ledger was unavailable; no thresholds or archetypes were optimized on Mac.",
+  "research_only": true,
+  "paper_allowed": false,
+  "live_allowed": false,
+  "real_money_allowed": false,
+  "behavior_change_allowed": false
+}

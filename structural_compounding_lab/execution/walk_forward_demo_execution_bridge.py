@@ -44,6 +44,26 @@ DEFAULT_SYMBOL_ALLOWLIST = "ADAUSDT,LINKUSDT,BNBUSDT,XRPUSDT,AVAXUSDT,DOGEUSDT,E
 DEFAULT_ALERT_TO = "nneupane1@gmail.com"
 DEMO_ENV_PREFIXES = ("BINANCE_DEMO_", "RTS_ALERT_")
 DEMO_ENV_KEYS = {"TRADING_SYSTEM_CONFIG"}
+SOURCE_6H_CONTEXT_FIELDS = (
+    "six_h_context_overlay_court",
+    "six_h_context_overlay_classification",
+    "six_h_context_variant",
+    "six_h_context_scale_multiplier",
+    "six_h_label_available",
+    "six_h_context_candle_close_timestamp",
+    "six_h_trend_state",
+    "six_h_structure_state",
+    "six_h_alignment",
+    "six_h_conflict",
+    "six_h_room_to_target_r",
+    "six_h_insufficient_room",
+    "six_h_clean_confluence",
+    "six_h_context_only",
+    "native_6h_execution_enabled",
+    "original_net_r_before_6h_context",
+    "net_r_after_6h_context",
+)
+SOURCE_6H_CONTEXT_RECORD_FIELDS = tuple(f"source_{key}" for key in SOURCE_6H_CONTEXT_FIELDS)
 
 
 @dataclass(frozen=True)
@@ -229,6 +249,18 @@ def _source_target_reference(row: dict[str, str]) -> str:
     return str(row.get("target_reference") or row.get("exit_price") or "")
 
 
+def _source_6h_context(row: dict[str, str]) -> dict[str, str]:
+    return {key: row.get(key, "") for key in SOURCE_6H_CONTEXT_FIELDS}
+
+
+def _source_6h_context_for_record(row: dict[str, Any]) -> dict[str, Any]:
+    return {f"source_{key}": row.get(key, "") for key in SOURCE_6H_CONTEXT_FIELDS}
+
+
+def _carry_source_6h_context(record: dict[str, Any]) -> dict[str, Any]:
+    return {key: record.get(key, "") for key in SOURCE_6H_CONTEXT_RECORD_FIELDS}
+
+
 def _read_activation_timestamp(output_root: Path) -> datetime | None:
     path = _activation_state_path(output_root)
     if not path.exists():
@@ -312,6 +344,7 @@ def _candidate_rows(config: BridgeConfig, *, activation_timestamp: datetime | No
                         "no_order_sent": row.get("no_order_sent", ""),
                         "broker_path_exists": row.get("broker_path_exists", ""),
                         "skip_reason": reason,
+                        **_source_6h_context(row),
                     }
                 )
             continue
@@ -335,6 +368,7 @@ def _candidate_rows(config: BridgeConfig, *, activation_timestamp: datetime | No
                 "active_equity_after_event_eur": row.get("active_equity_after_event_eur", ""),
                 "spot_compatible_long_only": row.get("spot_compatible_long_only", "true"),
                 "short_selling_allowed": row.get("short_selling_allowed", "false"),
+                **_source_6h_context(row),
             }
         )
     candidates.sort(key=lambda item: _parse_timestamp(item.get("timestamp", "")) or datetime.min.replace(tzinfo=timezone.utc))
@@ -352,7 +386,7 @@ def _safe_alert(output_root: Path, summary: dict[str, Any], message: str) -> dic
     sender = os.getenv("RTS_ALERT_EMAIL_FROM", "").strip()
     username = os.getenv("RTS_ALERT_SMTP_USERNAME", "").strip()
     password = os.getenv("RTS_ALERT_SMTP_PASSWORD", "")
-    subject = f"RTS walk-forward demo bridge: {summary['final_classification']}"
+    subject = f"RTS live-market demo bridge: {summary['final_classification']}"
     body = (
         f"{message}\n\n"
         f"Classification: {summary['final_classification']}\n"
@@ -422,31 +456,53 @@ def _safe_order_event_alert(output_root: Path, record: dict[str, Any]) -> dict[s
     password = os.getenv("RTS_ALERT_SMTP_PASSWORD", "")
     subject = _order_event_subject(event_type, record)
     body_lines = [
-            _order_event_heading(event_type),
-            "",
-            "Source signal:",
-            f"- source_trade_id: {record.get('source_trade_id', '')}",
-            f"- source_decision_id: {record.get('source_decision_id', '')}",
-            f"- source_timestamp: {record.get('source_timestamp', '')}",
-            f"- source_direction: {record.get('direction', '')}",
-            f"- source_state: {record.get('source_state', '')}",
-            f"- source_entry_reference: {record.get('source_entry_reference', '')}",
-            f"- source_stop_reference: {record.get('source_stop_reference', '')}",
-            f"- source_target_reference: {record.get('source_target_reference', '')}",
-            f"- source_amount_bought_eur: {record.get('source_amount_bought_eur', '')}",
-            f"- source_position_notional_eur: {record.get('source_position_notional_eur', '')}",
-            f"- source_risk_eur: {record.get('source_risk_eur', '')}",
-            f"- source_total_equity_after_event_eur: {record.get('source_total_equity_after_event_eur', '')}",
-            f"- source_active_equity_reference_eur: {record.get('source_active_equity_reference_eur', '')}",
-            f"- source_research_only: {record.get('source_research_only', '')}",
-            f"- source_no_order_sent: {record.get('source_no_order_sent', '')}",
-            f"- source_broker_path_exists: {record.get('source_broker_path_exists', '')}",
-            "",
-            "Reason / context:",
-            f"- bridge_reason: {record.get('bridge_reason', '')}",
-            f"- position_effect: {record.get('position_effect', '')}",
-            f"- execution_scope: {record.get('execution_scope', '')}",
-            f"- exit_handling_note: {record.get('exit_handling_note', '')}",
+        _order_event_top_summary(event_type, record),
+        "",
+        "Email stream: BINANCE SPOT TESTNET DEMO ORDER.",
+        "This is a demo execution email, not a live-market signal email.",
+        "",
+        _order_event_heading(event_type),
+        "",
+        "Top numbers:",
+        f"- demo_order_quote_filled: {_format_quote_amount(record.get('quote_filled'))}",
+        f"- demo_net_pnl_quote: {_format_quote_amount(record.get('net_pnl_quote'), signed=True)}",
+        f"- demo_net_r_multiple: {record.get('net_r_multiple', '')}",
+        f"- source_amount_bought_eur: {_format_eur_text(record.get('source_amount_bought_eur'))}",
+        f"- source_position_notional_eur: {_format_eur_text(record.get('source_position_notional_eur'))}",
+        f"- source_total_equity_after_event_eur: {_format_eur_text(record.get('source_total_equity_after_event_eur'))}",
+        f"- source_active_equity_reference_eur: {_format_eur_text(record.get('source_active_equity_reference_eur'))}",
+        "",
+        "Source signal:",
+        f"- source_trade_id: {record.get('source_trade_id', '')}",
+        f"- source_decision_id: {record.get('source_decision_id', '')}",
+        f"- source_timestamp: {record.get('source_timestamp', '')}",
+        f"- source_direction: {record.get('direction', '')}",
+        f"- source_state: {record.get('source_state', '')}",
+        f"- source_entry_reference: {record.get('source_entry_reference', '')}",
+        f"- source_stop_reference: {record.get('source_stop_reference', '')}",
+        f"- source_target_reference: {record.get('source_target_reference', '')}",
+        f"- source_risk_eur: {_format_eur_text(record.get('source_risk_eur'))}",
+        f"- source_research_only: {record.get('source_research_only', '')}",
+        f"- source_no_order_sent: {record.get('source_no_order_sent', '')}",
+        f"- source_broker_path_exists: {record.get('source_broker_path_exists', '')}",
+        "",
+        "Source 6H context overlay:",
+        f"- source_six_h_context_overlay_court: {record.get('source_six_h_context_overlay_court', '')}",
+        f"- source_six_h_context_variant: {record.get('source_six_h_context_variant', '')}",
+        f"- source_six_h_context_scale_multiplier: {record.get('source_six_h_context_scale_multiplier', '')}",
+        f"- source_six_h_clean_confluence: {record.get('source_six_h_clean_confluence', '')}",
+        f"- source_six_h_context_candle_close_timestamp: {record.get('source_six_h_context_candle_close_timestamp', '')}",
+        f"- source_six_h_trend_state: {record.get('source_six_h_trend_state', '')}",
+        f"- source_six_h_structure_state: {record.get('source_six_h_structure_state', '')}",
+        f"- source_original_net_r_before_6h_context: {record.get('source_original_net_r_before_6h_context', '')}",
+        f"- source_net_r_after_6h_context: {record.get('source_net_r_after_6h_context', '')}",
+        f"- source_native_6h_execution_enabled: {record.get('source_native_6h_execution_enabled', '')}",
+        "",
+        "Reason / context:",
+        f"- bridge_reason: {record.get('bridge_reason', '')}",
+        f"- position_effect: {record.get('position_effect', '')}",
+        f"- execution_scope: {record.get('execution_scope', '')}",
+        f"- exit_handling_note: {record.get('exit_handling_note', '')}",
     ]
     if event_type == "EXIT":
         body_lines.extend(
@@ -467,9 +523,9 @@ def _safe_order_event_alert(output_root: Path, record: dict[str, Any]) -> dict[s
                 f"- exit_reference: {record.get('exit_reference', '')}",
                 "",
                 "PnL:",
-                f"- gross_pnl_quote: {record.get('gross_pnl_quote', '')}",
-                f"- estimated_fees_quote: {record.get('estimated_fees_quote', '')}",
-                f"- net_pnl_quote: {record.get('net_pnl_quote', '')}",
+                f"- gross_pnl_quote: {_format_quote_amount(record.get('gross_pnl_quote'), signed=True)}",
+                f"- estimated_fees_quote: {_format_quote_amount(record.get('estimated_fees_quote'))}",
+                f"- net_pnl_quote: {_format_quote_amount(record.get('net_pnl_quote'), signed=True)}",
                 f"- net_r_multiple: {record.get('net_r_multiple', '')}",
                 f"- result: {record.get('result_label', '')}",
                 f"- holding_seconds: {record.get('holding_seconds', '')}",
@@ -562,11 +618,10 @@ def _order_event_subject(event_type: str, record: dict[str, Any]) -> str:
     status = record.get("exchange_status", "")
     if event_type == "EXIT":
         net_pnl = _decimal(record.get("net_pnl_quote"))
-        pnl_suffix = f" {net_pnl:+f} USDT" if net_pnl else ""
         if net_pnl > 0:
-            return f"{prefix} EXIT - CONGRATULATIONS PROFIT: {symbol} {side} {status}{pnl_suffix}"
+            return f"{prefix} EXIT - CONGRATULATIONS PROFIT {_format_quote_amount(net_pnl, signed=True)}: {symbol} {side} {status}"
         if net_pnl < 0:
-            return f"{prefix} EXIT - LOSS CONTROL: {symbol} {side} {status}{pnl_suffix}"
+            return f"{prefix} EXIT - OOPS LOSING TRADE {_format_quote_amount(net_pnl, signed=True)}: {symbol} {side} {status}"
         return f"{prefix} EXIT - FLAT: {symbol} {side} {status}"
     if event_type == "SHORT_SIGNAL":
         return f"{prefix} SHORT SIGNAL: {symbol} SHORT NOT EXECUTED ON SPOT TESTNET"
@@ -575,8 +630,41 @@ def _order_event_subject(event_type: str, record: dict[str, Any]) -> str:
 
 def _order_event_heading(event_type: str) -> str:
     if event_type == "SHORT_SIGNAL":
-        return "Demo walk-forward short signal observed."
-    return f"Demo walk-forward {event_type.lower()} order event."
+        return "Demo live-market short signal observed."
+    return f"Demo live-market {event_type.lower()} order event."
+
+
+def _format_quote_amount(value: Any, *, signed: bool = False) -> str:
+    amount = _decimal(value)
+    sign = "+" if signed and amount > 0 else ""
+    return f"{sign}{amount:.8f} USDT"
+
+
+def _format_eur_text(value: Any, *, signed: bool = False) -> str:
+    if value in {None, ""}:
+        return "not recorded"
+    amount = _decimal(value)
+    sign = "+" if signed and amount > 0 else ""
+    return f"{sign}€{amount:,.2f}"
+
+
+def _order_event_top_summary(event_type: str, record: dict[str, Any]) -> str:
+    symbol = record.get("symbol", "")
+    side = record.get("demo_side", "")
+    if event_type == "EXIT":
+        net_pnl = _decimal(record.get("net_pnl_quote"))
+        if net_pnl > 0:
+            return f"CONGRATULATIONS: PROFIT {_format_quote_amount(net_pnl, signed=True)} | {symbol} {side}"
+        if net_pnl < 0:
+            return f"OOPS: LOSING TRADE {_format_quote_amount(net_pnl, signed=True)} | {symbol} {side}"
+        return f"FLAT EXIT: 0.00000000 USDT | {symbol} {side}"
+    if event_type == "ENTRY":
+        return (
+            f"ENTRY FILLED: {symbol} {side} | "
+            f"demo filled {_format_quote_amount(record.get('quote_filled'))} | "
+            f"source amount {_format_eur_text(record.get('source_amount_bought_eur'))}"
+        )
+    return f"{event_type}: {symbol} {side}"
 
 
 def _existing_records(output_root: Path) -> list[dict[str, Any]]:
@@ -632,6 +720,7 @@ def _short_signal_record(item: dict[str, Any]) -> dict[str, Any]:
         "source_research_only": item.get("research_only", ""),
         "source_no_order_sent": item.get("no_order_sent", ""),
         "source_broker_path_exists": item.get("broker_path_exists", ""),
+        **_source_6h_context_for_record(item),
         "bridge_reason": "short_signal_observed_spot_testnet_execution_not_available",
         "execution_scope": "binance_spot_testnet_demo_signal_email_only",
         "exit_handling_note": "no_short_position_opened_no_exit_order_possible_on_spot_testnet",
@@ -726,6 +815,7 @@ def _submit_demo_exit(client: Any, entry: dict[str, Any]) -> dict[str, Any] | No
         "source_research_only": entry.get("source_research_only", ""),
         "source_no_order_sent": entry.get("source_no_order_sent", ""),
         "source_broker_path_exists": entry.get("source_broker_path_exists", ""),
+        **_carry_source_6h_context(entry),
         "bridge_reason": f"walk_forward_demo_bridge_long_exit_{exit_reason}",
         "execution_scope": "binance_spot_testnet_demo_only",
         "exit_handling_note": "spot_testnet_demo_exit_close_submitted_from_original_research_stop_target_reference",
@@ -798,6 +888,7 @@ def _submit_demo_entry(client: Any, row: dict[str, str]) -> dict[str, Any]:
         "source_research_only": row.get("research_only", ""),
         "source_no_order_sent": row.get("no_order_sent", ""),
         "source_broker_path_exists": row.get("broker_path_exists", ""),
+        **_source_6h_context_for_record(row),
         "bridge_reason": "walk_forward_demo_bridge_long_entry_from_research_signal",
         "execution_scope": "binance_spot_testnet_demo_only",
         "exit_handling_note": "spot_testnet_demo_exit_email_requires_future_exit_event; no production exit/order path is enabled",
@@ -837,6 +928,7 @@ FIELDNAMES = [
     "source_research_only",
     "source_no_order_sent",
     "source_broker_path_exists",
+    *SOURCE_6H_CONTEXT_RECORD_FIELDS,
     "bridge_reason",
     "execution_scope",
     "exit_handling_note",

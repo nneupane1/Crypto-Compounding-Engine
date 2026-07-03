@@ -35,7 +35,9 @@ runtime without shipping full research archives:
 - reduced-cap manifest JSON;
 - recent multi-symbol runtime candle snapshots for active symbols.
 
-The seed folder is approximately `4.9MB`.
+The seed folder is intentionally small enough for Git and large enough to give
+the scheduler recent 1m/15m/1H/6H context without shipping full research
+archives.
 
 ## Excluded
 
@@ -70,4 +72,3 @@ The production extraction remains default-disabled for live trading:
 - Next.js production build passed before local build artifacts were removed.
 - Docker build was not run because the local Docker daemon/Colima was not
   running.
-

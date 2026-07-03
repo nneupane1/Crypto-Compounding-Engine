@@ -61,6 +61,10 @@ ACTIVE_MULTI_SYMBOL_FREEZE_NOTE = (
     "BTC-inclusive nine-symbol earned-slot research freeze. This is still output-only "
     "shadow-forward observation; it does not enable paper, live, order, or broker behavior."
 )
+ACTIVE_6H_CONTEXT_OVERLAY_COURT = "multi_asset_6h_context_overlay_court_001"
+ACTIVE_6H_CONTEXT_OVERLAY_CLASSIFICATION = "MULTI_ASSET_6H_CONTEXT_OVERLAY_FREEZE_CANDIDATE_RESEARCH_ONLY"
+ACTIVE_6H_CONTEXT_VARIANT = "light_boost_6h_confluence"
+ACTIVE_6H_CONTEXT_BOOST_MULTIPLIER = 1.10
 SPOT_COMPATIBLE_LONG_ONLY = True
 SHORT_SELLING_ALLOWED = False
 EARNED_PARALLEL_SLOT_LADDER: tuple[dict[str, Any], ...] = (
@@ -121,7 +125,7 @@ class MultiSymbolForwardRuntimeConfig:
     output_root: Path
     now_utc: datetime | None = None
     fetch_function: FetchFunction | None = None
-    seed_tail_rows: int = 1440
+    seed_tail_rows: int = 43200
     max_catchup_minutes: int = 10080
     throttle_seconds: float = 0.05
 
@@ -275,7 +279,7 @@ def _source_csv_for_symbol(config: MultiSymbolForwardRuntimeConfig, symbol: str)
             candidates.append(canonical)
     if not candidates:
         return None
-    return max(candidates, key=lambda path: path.stat().st_mtime)
+    return max(candidates, key=lambda path: path.stat().st_size)
 
 
 def _normalize_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -340,6 +344,7 @@ def _quality(frame: pd.DataFrame) -> dict[str, Any]:
             "ohlc_failure_count": 0,
             "complete_15m_bars": 0,
             "complete_1h_bars": 0,
+            "complete_6h_context_bars": 0,
             "clean": False,
         }
     timestamps = frame["timestamp"].sort_values().reset_index(drop=True)
@@ -359,6 +364,7 @@ def _quality(frame: pd.DataFrame) -> dict[str, Any]:
     ]
     complete_15m = _resample_complete(frame, "15min", 15)
     complete_1h = _resample_complete(frame, "1h", 60)
+    complete_6h_context = _resample_complete_6h_context(frame)
     return {
         "rows": int(len(frame)),
         "first_timestamp": timestamps.iloc[0].isoformat(),
@@ -369,6 +375,7 @@ def _quality(frame: pd.DataFrame) -> dict[str, Any]:
         "ohlc_failure_count": int(len(ohlc_failures)),
         "complete_15m_bars": int(len(complete_15m)),
         "complete_1h_bars": int(len(complete_1h)),
+        "complete_6h_context_bars": int(len(complete_6h_context)),
         "clean": bool(len(gap_diffs) == 0 and missing == 0 and duplicate_count == 0 and len(ohlc_failures) == 0),
     }
 
@@ -390,6 +397,174 @@ def _resample_complete(frame: pd.DataFrame, rule: str, expected: int) -> pd.Data
         )
     )
     return bars[bars["source_1m_count"] == expected].dropna(subset=["open", "high", "low", "close"]).reset_index()
+
+
+def _augment_6h_context_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return frame.copy()
+    working = frame.copy().sort_values("timestamp").reset_index(drop=True)
+    prev_close = working["close"].shift(1)
+    tr = pd.concat(
+        [
+            working["high"] - working["low"],
+            (working["high"] - prev_close).abs(),
+            (working["low"] - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    working["atr14"] = tr.rolling(14, min_periods=3).mean()
+    working["ema20"] = working["close"].ewm(span=20, adjust=False).mean()
+    working["ema50"] = working["close"].ewm(span=50, adjust=False).mean()
+    working["ema20_slope"] = working["ema20"].diff()
+    working["ema50_slope"] = working["ema50"].diff()
+    working["recent_high_20"] = working["high"].rolling(20, min_periods=5).max()
+    working["recent_low_20"] = working["low"].rolling(20, min_periods=5).min()
+    return working
+
+
+def _resample_complete_6h_context(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame()
+    bars = (
+        frame.set_index("timestamp")
+        .sort_index()
+        .resample("6h", label="right", closed="left")
+        .agg(
+            open=("open", "first"),
+            high=("high", "max"),
+            low=("low", "min"),
+            close=("close", "last"),
+            volume=("volume", "sum"),
+            source_1m_count=("close", "count"),
+        )
+    )
+    complete = bars[bars["source_1m_count"] == 360].dropna(subset=["open", "high", "low", "close"]).reset_index()
+    return _augment_6h_context_frame(complete)
+
+
+def _six_h_trend_state(candle: pd.Series) -> str:
+    close = _float_or_none(candle.get("close")) or 0.0
+    ema20 = _float_or_none(candle.get("ema20")) or 0.0
+    ema50 = _float_or_none(candle.get("ema50")) or 0.0
+    slope20 = _float_or_none(candle.get("ema20_slope")) or 0.0
+    slope50 = _float_or_none(candle.get("ema50_slope")) or 0.0
+    if close > ema20 and ema20 >= ema50 and slope20 >= 0.0 and slope50 >= 0.0:
+        return "bullish"
+    if close < ema20 and ema20 <= ema50 and slope20 <= 0.0 and slope50 <= 0.0:
+        return "bearish"
+    return "neutral"
+
+
+def _six_h_structure_state(window: pd.DataFrame) -> str:
+    if len(window) < 4:
+        return "unknown"
+    highs = window["high"].tail(4).tolist()
+    lows = window["low"].tail(4).tolist()
+    if highs[-1] > highs[-2] > highs[-3] and lows[-1] > lows[-2] > lows[-3]:
+        return "higher_high_higher_low"
+    if highs[-1] < highs[-2] < highs[-3] and lows[-1] < lows[-2] < lows[-3]:
+        return "lower_high_lower_low"
+    return "mixed"
+
+
+def _label_six_h_context(row: dict[str, Any], frame_6h: pd.DataFrame) -> dict[str, Any]:
+    if frame_6h.empty:
+        return {
+            "six_h_label_available": False,
+            "six_h_unavailable_reason": "no_complete_6h_bars",
+            "six_h_context_only": True,
+            "native_6h_execution_enabled": False,
+        }
+    entry_ts = pd.Timestamp(row.get("entry_timestamp") or row.get("entry_time"))
+    if entry_ts.tzinfo is not None:
+        entry_ts = entry_ts.tz_convert("UTC").tz_localize(None)
+    eligible = frame_6h[frame_6h["timestamp"] <= entry_ts]
+    if eligible.empty:
+        return {
+            "six_h_label_available": False,
+            "six_h_unavailable_reason": "no_prior_closed_6h_context_bar",
+            "six_h_context_only": True,
+            "native_6h_execution_enabled": False,
+        }
+    context = eligible.iloc[-1]
+    window = eligible.tail(24)
+    side = str(row.get("side") or "").strip().lower()
+    entry = _float_or_none(row.get("entry_price")) or 0.0
+    stop = _float_or_none(row.get("initial_stop")) or 0.0
+    trend = _six_h_trend_state(context)
+    structure = _six_h_structure_state(window)
+    supply = _float_or_none(context.get("recent_high_20")) or 0.0
+    demand = _float_or_none(context.get("recent_low_20")) or 0.0
+    risk_distance = max(abs(entry - stop), 1e-9)
+    room_distance = (supply - entry) if side == "long" else (entry - demand)
+    room_r = max(room_distance, 0.0) / risk_distance
+    alignment = (side == "long" and trend == "bullish") or (side == "short" and trend == "bearish")
+    alignment = alignment or (side == "long" and structure == "higher_high_higher_low")
+    alignment = alignment or (side == "short" and structure == "lower_high_lower_low")
+    if side == "long":
+        conflict = trend == "bearish" or (supply > 0.0 and (supply - entry) / max(entry, 1e-9) <= 0.02)
+    elif side == "short":
+        conflict = trend == "bullish" or (demand > 0.0 and (entry - demand) / max(entry, 1e-9) <= 0.02)
+    else:
+        conflict = False
+    insufficient_room = room_r < 1.50
+    boost = bool(alignment and not conflict and not insufficient_room)
+    return {
+        "six_h_label_available": True,
+        "six_h_context_candle_close_timestamp": pd.Timestamp(context["timestamp"]).isoformat(),
+        "six_h_trend_state": trend,
+        "six_h_structure_state": structure,
+        "six_h_alignment": bool(alignment),
+        "six_h_conflict": bool(conflict),
+        "six_h_room_to_target_r": round(room_r, 6),
+        "six_h_insufficient_room": bool(insufficient_room),
+        "six_h_clean_confluence": boost,
+        "six_h_context_variant": ACTIVE_6H_CONTEXT_VARIANT,
+        "six_h_context_scale_multiplier": ACTIVE_6H_CONTEXT_BOOST_MULTIPLIER if boost else 1.0,
+        "six_h_context_only": True,
+        "native_6h_execution_enabled": False,
+    }
+
+
+def _apply_six_h_context_overlay(candidates: list[dict[str, Any]], frames_by_symbol: dict[str, pd.DataFrame]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    adjusted: list[dict[str, Any]] = []
+    available = 0
+    boosted = 0
+    for row in candidates:
+        symbol = str(row.get("symbol") or "")
+        label = _label_six_h_context(row, frames_by_symbol.get(symbol, pd.DataFrame()))
+        cloned = dict(row)
+        original_net_r = _float_or_none(cloned.get("net_r")) or 0.0
+        multiplier = float(label.get("six_h_context_scale_multiplier") or 1.0)
+        cloned.update(label)
+        cloned["original_net_r_before_6h_context"] = original_net_r
+        cloned["net_r"] = round(original_net_r * multiplier, 10)
+        cloned["six_h_context_overlay_court"] = ACTIVE_6H_CONTEXT_OVERLAY_COURT
+        cloned["six_h_context_overlay_classification"] = ACTIVE_6H_CONTEXT_OVERLAY_CLASSIFICATION
+        cloned["entries_changed"] = False
+        cloned["exits_changed"] = False
+        cloned["thresholds_tuned"] = False
+        cloned["native_6h_execution_enabled"] = False
+        available += int(bool(label.get("six_h_label_available")))
+        boosted += int(multiplier != 1.0)
+        adjusted.append(cloned)
+    return adjusted, {
+        "six_h_context_overlay_enabled": True,
+        "six_h_context_overlay_court": ACTIVE_6H_CONTEXT_OVERLAY_COURT,
+        "six_h_context_overlay_classification": ACTIVE_6H_CONTEXT_OVERLAY_CLASSIFICATION,
+        "six_h_context_variant": ACTIVE_6H_CONTEXT_VARIANT,
+        "six_h_context_boost_multiplier": ACTIVE_6H_CONTEXT_BOOST_MULTIPLIER,
+        "candidate_rows": len(candidates),
+        "six_h_label_available_rows": available,
+        "six_h_boosted_rows": boosted,
+        "six_h_label_coverage_pct": _safe_ratio(available, len(candidates), 0.0) * 100.0,
+        "execution_timeframe": "1H",
+        "context_timeframe": "6H",
+        "native_6h_execution_enabled": False,
+        "entries_changed": False,
+        "exits_changed": False,
+        "thresholds_tuned": False,
+    }
 
 
 def _default_fetch(config: MultiSymbolForwardRuntimeConfig, symbol: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
@@ -428,6 +603,15 @@ def _allocator_spec_metadata() -> dict[str, Any]:
         "allocator_strategy_exits_changed": False,
         "allocator_thresholds_tuned": False,
         "allocator_paper_live_order_broker_enabled": False,
+        "six_h_context_overlay_enabled": True,
+        "six_h_context_overlay_court": ACTIVE_6H_CONTEXT_OVERLAY_COURT,
+        "six_h_context_overlay_classification": ACTIVE_6H_CONTEXT_OVERLAY_CLASSIFICATION,
+        "six_h_context_variant": ACTIVE_6H_CONTEXT_VARIANT,
+        "six_h_context_boost_multiplier": ACTIVE_6H_CONTEXT_BOOST_MULTIPLIER,
+        "six_h_context_only": True,
+        "native_6h_execution_enabled": False,
+        "execution_timeframe": "1H",
+        "context_timeframe": "6H",
     }
 
 
@@ -463,6 +647,10 @@ def _decision_rows(
                 "strategy_signal_evaluated": False,
                 "scanner_selection_evaluated": False,
                 "allocator_spec_id": EARNED_PARALLEL_SLOT_SPEC_ID,
+                "six_h_context_overlay_court": ACTIVE_6H_CONTEXT_OVERLAY_COURT,
+                "six_h_context_variant": ACTIVE_6H_CONTEXT_VARIANT,
+                "six_h_context_only": True,
+                "native_6h_execution_enabled": False,
                 "allocator_max_slots_active": "",
                 "allocator_slot_action": "candle_slot_recorded_no_trade_signal",
                 "reason": "earned_parallel_slot_runtime_candle_decision_slot_only_no_strategy_or_execution_change",
@@ -697,6 +885,31 @@ def _strategy_event_rows(
             "symbol_cap_eur": trade.get("symbol_cap_eur", ""),
             "concurrent_slots_at_entry": trade.get("concurrent_slots_at_entry", ""),
             "max_slots_at_entry": trade.get("max_slots_at_entry", ""),
+            "six_h_context_overlay_enabled": True,
+            "six_h_context_overlay_court": candidate.get("six_h_context_overlay_court", ACTIVE_6H_CONTEXT_OVERLAY_COURT),
+            "six_h_context_overlay_classification": candidate.get(
+                "six_h_context_overlay_classification",
+                ACTIVE_6H_CONTEXT_OVERLAY_CLASSIFICATION,
+            ),
+            "six_h_context_variant": candidate.get("six_h_context_variant", ACTIVE_6H_CONTEXT_VARIANT),
+            "six_h_context_scale_multiplier": candidate.get("six_h_context_scale_multiplier", ""),
+            "six_h_label_available": candidate.get("six_h_label_available", ""),
+            "six_h_unavailable_reason": candidate.get("six_h_unavailable_reason", ""),
+            "six_h_context_candle_close_timestamp": candidate.get("six_h_context_candle_close_timestamp", ""),
+            "six_h_trend_state": candidate.get("six_h_trend_state", ""),
+            "six_h_structure_state": candidate.get("six_h_structure_state", ""),
+            "six_h_alignment": candidate.get("six_h_alignment", ""),
+            "six_h_conflict": candidate.get("six_h_conflict", ""),
+            "six_h_room_to_target_r": candidate.get("six_h_room_to_target_r", ""),
+            "six_h_insufficient_room": candidate.get("six_h_insufficient_room", ""),
+            "six_h_clean_confluence": candidate.get("six_h_clean_confluence", ""),
+            "six_h_context_only": True,
+            "native_6h_execution_enabled": False,
+            "original_net_r_before_6h_context": candidate.get("original_net_r_before_6h_context", ""),
+            "net_r_after_6h_context": trade.get("net_r", candidate.get("net_r", "")),
+            "entries_changed": False,
+            "exits_changed": False,
+            "thresholds_tuned": False,
             **{key: json.dumps(value) if key == "allocator_ladder" else value for key, value in allocator_metadata.items()},
         }
         for event_type, event_time in (("ENTRY", entry_time), ("EXIT", exit_time)):
@@ -737,11 +950,20 @@ def _evaluate_forward_strategy_events(
     symbol_eval_results: list[dict[str, Any]] = []
     candidates: list[dict[str, Any]] = []
     cost_rejected: list[dict[str, Any]] = []
+    frames_6h_by_symbol: dict[str, pd.DataFrame] = {}
     for result in symbol_results:
         symbol = str(result.get("symbol") or "")
         if not symbol:
             continue
-        eval_result = _evaluate_symbol_strategy(config, symbol, _runtime_copy_path(config.output_root, symbol))
+        runtime_path = _runtime_copy_path(config.output_root, symbol)
+        if runtime_path.exists():
+            frame = _normalize_frame(pd.read_csv(runtime_path))
+            six_h_context = _resample_complete_6h_context(frame)
+            six_h_context.to_csv(runtime_path.parent / "complete_6h_context_bars.csv", index=False)
+            frames_6h_by_symbol[symbol] = six_h_context
+        else:
+            frames_6h_by_symbol[symbol] = pd.DataFrame()
+        eval_result = _evaluate_symbol_strategy(config, symbol, runtime_path)
         symbol_eval_results.append(eval_result["summary"])
         candidates.extend(eval_result.get("candidate_rows", []))
         cost_rejected.extend(eval_result.get("cost_rejected_rows", []))
@@ -767,6 +989,8 @@ def _evaluate_forward_strategy_events(
     ]
     if SPOT_COMPATIBLE_LONG_ONLY:
         candidates = [row for row in candidates if str(row.get("side") or "").strip().lower() != "short"]
+    candidates_before_6h_context = [dict(row) for row in candidates]
+    candidates, six_h_context_summary = _apply_six_h_context_overlay(candidates, frames_6h_by_symbol)
     if candidates:
         portfolio = _earned_slot_replay(
             candidates,
@@ -792,6 +1016,7 @@ def _evaluate_forward_strategy_events(
         }
     candidate_by_signature = {_trade_signature(row): row for row in candidates}
     event_rows = _strategy_event_rows(portfolio.get("trade_rows", []), candidate_by_signature, existing_keys)
+    _write_replay_csv(config.output_root / "ledger" / "forward_strategy_all_symbol_candidates_before_6h_context.csv", candidates_before_6h_context)
     _write_replay_csv(config.output_root / "ledger" / "forward_strategy_all_symbol_candidates.csv", candidates)
     _write_replay_csv(config.output_root / "ledger" / "forward_strategy_selected_trades.csv", portfolio.get("trade_rows", []))
     _write_replay_csv(config.output_root / "ledger" / "forward_strategy_rejected_trades.csv", portfolio.get("rejected_rows", []))
@@ -804,6 +1029,7 @@ def _evaluate_forward_strategy_events(
         "spot_compatible_long_only": SPOT_COMPATIBLE_LONG_ONLY,
         "short_selling_allowed": SHORT_SELLING_ALLOWED,
         "short_candidates_rejected_for_spot": len(short_rejected_for_spot),
+        "six_h_context_overlay": six_h_context_summary,
         "priority_symbols": priority_symbols,
         "symbol_caps_eur": symbol_caps,
         "symbol_evaluator_results": symbol_eval_results,
@@ -918,18 +1144,42 @@ def _event_type(row: dict[str, Any]) -> str:
     return "ENTRY"
 
 
+def _format_eur(value: Any, *, signed: bool = False) -> str:
+    parsed = _float_or_none(value)
+    if parsed is None:
+        return "not recorded"
+    sign = "+" if signed and parsed > 0 else ""
+    return f"{sign}€{parsed:,.2f}"
+
+
+def _trade_event_top_line(row: dict[str, Any], *, symbol: str) -> str:
+    event_type = _event_type(row)
+    side = str(row.get("side") or row.get("direction") or "").upper() or "LONG"
+    if event_type == "EXIT":
+        pnl = _float_or_none(row.get("net_pnl_eur", row.get("pnl_eur", ""))) or 0.0
+        if pnl > 0:
+            return f"CONGRATULATIONS: PROFIT {_format_eur(pnl, signed=True)} | {symbol} {side}"
+        if pnl < 0:
+            return f"OOPS: LOSING TRADE {_format_eur(pnl, signed=True)} | {symbol} {side}"
+        return f"FLAT EXIT: €0.00 | {symbol} {side}"
+    amount = row.get("amount_bought_eur", row.get("position_notional_eur", ""))
+    equity = row.get("total_equity_after_event_eur", row.get("active_equity_reference_eur", ""))
+    return f"ENTRY TRIGGERED: {symbol} {side} | amount {_format_eur(amount)} | equity {_format_eur(equity)}"
+
+
 def _email_subject_for_trade_event(row: dict[str, Any], *, symbol: str, slot: str) -> str:
     event_type = _event_type(row)
     side = str(row.get("side") or row.get("direction") or "").upper()
-    pnl_value = row.get("net_pnl_eur", row.get("pnl_eur", ""))
-    try:
-        pnl_float = float(pnl_value)
-    except Exception:
-        pnl_float = 0.0
+    pnl_float = _float_or_none(row.get("net_pnl_eur", row.get("pnl_eur", ""))) or 0.0
     if event_type == "EXIT":
-        result = "CONGRATULATIONS PROFIT" if pnl_float > 0 else "LOSS CONTROL"
-        return f"RTS EARNED-SLOT FORWARD SCHEDULER EXIT {result}: {symbol} {side} {slot}"
-    return f"RTS EARNED-SLOT FORWARD SCHEDULER ENTRY: {symbol} {side} {slot}"
+        if pnl_float > 0:
+            result = f"CONGRATULATIONS PROFIT {_format_eur(pnl_float, signed=True)}"
+        elif pnl_float < 0:
+            result = f"OOPS LOSING TRADE {_format_eur(pnl_float, signed=True)}"
+        else:
+            result = "FLAT EXIT €0.00"
+        return f"RTS LIVE SIGNAL EXIT - {result}: {symbol} {side} {slot}"
+    return f"RTS LIVE SIGNAL ENTRY: {symbol} {side} {slot}"
 
 
 def _write_trade_trigger_email(output_root: Path, row: dict[str, Any]) -> dict[str, Any]:
@@ -943,84 +1193,84 @@ def _write_trade_trigger_email(output_root: Path, row: dict[str, Any]) -> dict[s
     latest_path = event_dir / "latest_multi_asset_trade_trigger_email.txt"
     subject = _email_subject_for_trade_event(row, symbol=symbol, slot=slot)
     reason = str(row.get("reason", ""))
-    pnl_table = _format_plain_table(
-        [
-            ("event_type", _event_type(row)),
-            ("symbol", symbol),
-            ("side/direction", row.get("side", row.get("direction", ""))),
-            ("entry_price", row.get("entry_price", row.get("entry_reference", ""))),
-            ("exit_price", row.get("exit_price", row.get("exit_reference", ""))),
-            ("initial_stop", row.get("initial_stop", row.get("stop_reference", ""))),
-            ("target_reference", row.get("target_reference", "")),
-            ("risk_eur", row.get("risk_eur", "")),
-            ("amount_bought_eur", row.get("amount_bought_eur", "")),
-            ("position_notional_eur", row.get("position_notional_eur", "")),
-            ("active_equity_ref_eur", row.get("active_equity_reference_eur", "")),
-            ("total_equity_after_event", row.get("total_equity_after_event_eur", "")),
-            ("net_pnl_eur", row.get("net_pnl_eur", row.get("pnl_eur", ""))),
-            ("net_r", row.get("net_r", row.get("r_multiple", ""))),
-            ("net_cost_r", row.get("net_cost_r", "")),
-            ("estimated_cost_eur", row.get("estimated_cost_eur", "")),
-        ],
-        label_width=20,
-    )
-    reason_table = _format_plain_table(
-        [
-            ("entry_reason", row.get("entry_reason", row.get("reason", ""))),
-            ("exit_reason", row.get("exit_reason", "")),
-            ("setup_class", row.get("setup_class", "")),
-            ("pattern", row.get("pattern", "")),
-            ("liquidity_event_type", row.get("liquidity_event_type", "")),
-            ("ema_score", row.get("ema_score", "")),
-            ("htf_confirmation_score", row.get("htf_confirmation_score", "")),
-            ("pullback_type", row.get("pullback_type", "")),
-            ("convexity_label", row.get("convexity_label", "")),
-            ("personality_label", row.get("personality_label", "")),
-            ("runner_label", row.get("runner_label", "")),
-            ("entry_score", row.get("entry_score", row.get("score", ""))),
-        ],
-        label_width=24,
-    )
-    allocator_table = _format_plain_table(
-        [
-            ("allocator_spec", row.get("allocator_spec_id", EARNED_PARALLEL_SLOT_SPEC_ID)),
-            ("allocator_action", row.get("allocator_slot_action", "")),
-            ("max_slots_at_entry", row.get("max_slots_at_entry", row.get("allocator_max_slots_active", ""))),
-            ("concurrent_slots", row.get("concurrent_slots_at_entry", "")),
-            ("closed_equity_unlock", row.get("closed_equity_at_entry", "")),
-            ("symbol_cap_eur", row.get("symbol_cap_eur", "")),
-            ("paper_validation_ready", "false"),
-            ("live_allowed", "false"),
-            ("order_path_created", "false"),
-        ],
-        label_width=24,
-    )
     body = "\n".join(
         [
-            "Earned-slot forward scheduler recorded an actionable research event.",
+            _trade_event_top_line(row, symbol=symbol),
+            "",
+            "Email stream: LIVE MARKET SIGNAL / PRODUCTION MONITORING.",
+            "This is a live-market scheduler signal email, not a Binance demo order email.",
             "",
             "This is NOT a Binance demo execution email.",
             "This is NOT a live-money execution email.",
-            "This scheduler records forward research signals only unless a separately approved execution adapter exists.",
+            "This scheduler records live-market strategy signals only unless a separately approved execution adapter exists.",
             "Spot compatibility: long-only. Short-selling candidates are rejected before scheduler trade events are emitted.",
             "",
-            "Trigger:",
+            "Core fields:",
+            f"- event_type: {_event_type(row)}",
             f"- event_key: {event_key}",
             f"- symbol: {symbol}",
+            f"- side/direction: {row.get('side', row.get('direction', ''))}",
             f"- decision_slot: {slot}",
             f"- closed_1h_candle_start: {row.get('closed_1h_candle_start', '')}",
             f"- closed_1h_candle_end: {row.get('closed_1h_candle_end', '')}",
             f"- source_1m_count: {row.get('source_1m_count', '')}",
             f"- reason: {reason}",
             "",
-            "PnL / risk table:",
-            pnl_table,
+            "PnL / equity:",
+            f"- amount_bought_eur: {_format_eur(row.get('amount_bought_eur', ''))}",
+            f"- position_notional_eur: {_format_eur(row.get('position_notional_eur', ''))}",
+            f"- active_equity_reference_eur: {_format_eur(row.get('active_equity_reference_eur', ''))}",
+            f"- total_equity_after_event_eur: {_format_eur(row.get('total_equity_after_event_eur', ''))}",
+            f"- net_pnl_eur: {_format_eur(row.get('net_pnl_eur', row.get('pnl_eur', '')), signed=True)}",
+            f"- risk_eur: {_format_eur(row.get('risk_eur', ''))}",
+            f"- estimated_cost_eur: {_format_eur(row.get('estimated_cost_eur', ''))}",
+            f"- net_r: {row.get('net_r', row.get('r_multiple', ''))}",
+            f"- net_cost_r: {row.get('net_cost_r', '')}",
             "",
-            "Entry / exit reason table:",
-            reason_table,
+            "Trade technicals:",
+            f"- entry_price: {row.get('entry_price', row.get('entry_reference', ''))}",
+            f"- exit_price: {row.get('exit_price', row.get('exit_reference', ''))}",
+            f"- initial_stop: {row.get('initial_stop', row.get('stop_reference', ''))}",
+            f"- target_reference: {row.get('target_reference', '')}",
+            f"- entry_reason: {row.get('entry_reason', row.get('reason', ''))}",
+            f"- exit_reason: {row.get('exit_reason', '')}",
+            f"- setup_class: {row.get('setup_class', '')}",
+            f"- pattern: {row.get('pattern', '')}",
+            f"- liquidity_event_type: {row.get('liquidity_event_type', '')}",
+            f"- ema_score: {row.get('ema_score', '')}",
+            f"- htf_confirmation_score: {row.get('htf_confirmation_score', '')}",
+            f"- pullback_type: {row.get('pullback_type', '')}",
+            f"- convexity_label: {row.get('convexity_label', '')}",
+            f"- personality_label: {row.get('personality_label', '')}",
+            f"- runner_label: {row.get('runner_label', '')}",
+            f"- entry_score: {row.get('entry_score', row.get('score', ''))}",
             "",
-            "Earned-slot allocator table:",
-            allocator_table,
+            "6H context overlay:",
+            f"- overlay_court: {row.get('six_h_context_overlay_court', ACTIVE_6H_CONTEXT_OVERLAY_COURT)}",
+            f"- overlay_classification: {row.get('six_h_context_overlay_classification', ACTIVE_6H_CONTEXT_OVERLAY_CLASSIFICATION)}",
+            f"- variant: {row.get('six_h_context_variant', ACTIVE_6H_CONTEXT_VARIANT)}",
+            f"- context_candle_close: {row.get('six_h_context_candle_close_timestamp', '')}",
+            f"- trend_state: {row.get('six_h_trend_state', '')}",
+            f"- structure_state: {row.get('six_h_structure_state', '')}",
+            f"- alignment: {row.get('six_h_alignment', '')}",
+            f"- conflict: {row.get('six_h_conflict', '')}",
+            f"- room_to_target_r: {row.get('six_h_room_to_target_r', '')}",
+            f"- clean_confluence: {row.get('six_h_clean_confluence', '')}",
+            f"- scale_multiplier: {row.get('six_h_context_scale_multiplier', '')}",
+            f"- original_net_r_before_6h_context: {row.get('original_net_r_before_6h_context', '')}",
+            f"- net_r_after_6h_context: {row.get('net_r_after_6h_context', row.get('net_r', ''))}",
+            "- native_6h_execution_enabled: false",
+            "- entries_changed: false",
+            "- exits_changed: false",
+            "- thresholds_tuned: false",
+            "",
+            "Allocator:",
+            f"- allocator_spec: {row.get('allocator_spec_id', EARNED_PARALLEL_SLOT_SPEC_ID)}",
+            f"- allocator_action: {row.get('allocator_slot_action', '')}",
+            f"- max_slots_at_entry: {row.get('max_slots_at_entry', row.get('allocator_max_slots_active', ''))}",
+            f"- concurrent_slots_at_entry: {row.get('concurrent_slots_at_entry', '')}",
+            f"- closed_equity_at_entry: {_format_eur(row.get('closed_equity_at_entry', ''))}",
+            f"- symbol_cap_eur: {_format_eur(row.get('symbol_cap_eur', ''))}",
             "",
             "Decision fields:",
             f"- strategy_signal_evaluated: {row.get('strategy_signal_evaluated', '')}",
@@ -1125,7 +1375,7 @@ def _send_multi_asset_trade_trigger_emails(output_root: Path, rows: list[dict[st
         "multi_asset_trade_trigger_emails_sent_this_run": sum(1 for row in event_records if row.get("email_sent")),
         "multi_asset_trade_trigger_email_ledger": str(ledger_path),
         "multi_asset_trade_trigger_latest_email": str(output_root / "alerts" / "multi_asset_trade_events" / "latest_multi_asset_trade_trigger_email.txt"),
-        "multi_asset_trade_trigger_email_subject_prefix": "RTS EARNED-SLOT FORWARD SCHEDULER",
+        "multi_asset_trade_trigger_email_subject_prefix": "RTS LIVE SIGNAL SCHEDULER",
     }
 
 
@@ -1282,10 +1532,10 @@ def _write_daily_no_trade_email(
     report_date = str(report_window["report_date"])
     event_path = event_dir / f"no_trade_daily_digest_{report_date}.txt"
     latest_path = event_dir / "latest_no_trade_daily_digest.txt"
-    subject = f"RTS EARNED-SLOT FORWARD SCHEDULER DAILY NO-TRADE DIGEST: {report_date}"
+    subject = f"RTS LIVE SIGNAL SCHEDULER DAILY NO-TRADE DIGEST: {report_date}"
     body = "\n".join(
         [
-            "No earned-slot forward scheduler trade event was recorded for the report day.",
+            "No live-market scheduler trade event was recorded for the report day.",
             "",
             "This is NOT a Binance demo execution email.",
             "This is NOT a live-money execution email.",
@@ -1552,8 +1802,10 @@ def _run_symbol(
     runtime_after.to_csv(runtime_path, index=False)
     bars_15m = _resample_complete(runtime_after, "15min", 15)
     bars_1h = _resample_complete(runtime_after, "1h", 60)
+    bars_6h = _resample_complete_6h_context(runtime_after)
     bars_15m.to_csv(runtime_path.parent / "complete_15m_bars.csv", index=False)
     bars_1h.to_csv(runtime_path.parent / "complete_1h_bars.csv", index=False)
+    bars_6h.to_csv(runtime_path.parent / "complete_6h_context_bars.csv", index=False)
     decision_rows = _decision_rows(symbol, bars_1h, existing_keys, decision_start=decision_start)
     for row in decision_rows:
         existing_keys.add(row["decision_key"])
@@ -1575,6 +1827,7 @@ def _run_symbol(
         "rows_after": int(len(runtime_after)),
         "complete_15m_bars": int(len(bars_15m)),
         "complete_1h_bars": int(len(bars_1h)),
+        "complete_6h_context_bars": int(len(bars_6h)),
         "decision_start_cutoff": decision_start.isoformat() if decision_start is not None else "",
         "new_decision_rows": int(len(decision_rows)),
         "quality": _quality(runtime_after),
@@ -1651,6 +1904,12 @@ def run_once(config: MultiSymbolForwardRuntimeConfig | None = None) -> dict[str,
             "active_multi_symbol_universe_id": ACTIVE_MULTI_SYMBOL_UNIVERSE_ID,
             "active_multi_symbol_freeze_court": ACTIVE_MULTI_SYMBOL_FREEZE_COURT,
             "active_multi_symbol_freeze_classification": EARNED_PARALLEL_SLOT_FREEZE_CLASSIFICATION,
+            "active_6h_context_overlay_court": ACTIVE_6H_CONTEXT_OVERLAY_COURT,
+            "active_6h_context_overlay_classification": ACTIVE_6H_CONTEXT_OVERLAY_CLASSIFICATION,
+            "active_6h_context_variant": ACTIVE_6H_CONTEXT_VARIANT,
+            "active_6h_context_boost_multiplier": ACTIVE_6H_CONTEXT_BOOST_MULTIPLIER,
+            "native_6h_execution_enabled": False,
+            "six_h_context_only": True,
             "active_symbols": list(SYMBOLS),
             "latest_safe_1m_timestamp": latest_safe.isoformat(),
             "symbols_expected": len(SYMBOLS),
@@ -1691,6 +1950,10 @@ def run_once(config: MultiSymbolForwardRuntimeConfig | None = None) -> dict[str,
             "latest_safe_1m_timestamp": summary["latest_safe_1m_timestamp"],
             "allocator_spec_id": EARNED_PARALLEL_SLOT_SPEC_ID,
             "allocator_freeze_classification": EARNED_PARALLEL_SLOT_FREEZE_CLASSIFICATION,
+            "six_h_context_overlay_court": ACTIVE_6H_CONTEXT_OVERLAY_COURT,
+            "six_h_context_variant": ACTIVE_6H_CONTEXT_VARIANT,
+            "native_6h_execution_enabled": False,
+            "six_h_context_only": True,
             "latest_runtime_timestamp_by_symbol": {
                 row["symbol"]: row.get("quality", {}).get("last_timestamp") for row in symbol_results
             },

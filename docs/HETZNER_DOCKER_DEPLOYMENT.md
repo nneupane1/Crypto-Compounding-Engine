@@ -1,13 +1,16 @@
 # Hetzner Docker Deployment Notes
 
-Target starter server: Hetzner CPX11-class VPS.
+Target starter server: Hetzner CPX22 Regular Performance VPS.
 
 Recommended baseline:
 
-- Ubuntu LTS
+- CPX22 / x86 / Falkenstein / 2 vCPU / 4 GB RAM / 80 GB SSD
+- Ubuntu LTS, preferably Ubuntu 24.04 LTS for conservative Docker compatibility
 - Docker Engine + Docker Compose plugin
 - firewall allowing SSH and, later, HTTPS only
 - dashboard bound to localhost until a reverse proxy with auth is installed
+- no extra volume, no paid backup, no load balancer, no object storage unless
+  deliberately added later
 
 Initial server steps:
 
@@ -44,4 +47,3 @@ Persistent state lives in Docker volumes:
 
 The image includes only lightweight runtime seed files. It does not include the
 local 8-year research archives.
-

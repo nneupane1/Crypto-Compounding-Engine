@@ -1,0 +1,47 @@
+{
+  "account_endpoint_used": false,
+  "active_cap_eur": 500000.0,
+  "behavior_change_allowed": false,
+  "broker_path_created": false,
+  "btc_recommended_cap_eur": 2000000.0,
+  "classification_reasons": [
+    "btc_depth_supports_future_deep_capacity_ceiling_under_strict_25bps"
+  ],
+  "court_name": "NINE_SYMBOL_BTC_CAP_COMPATIBILITY_ARTIFACT_RESEARCH_ONLY",
+  "created_at_utc": "2026-07-02T08:08:48.948668+00:00",
+  "entries_changed": false,
+  "exits_changed": false,
+  "final_classification": "NINE_SYMBOL_BTC_EXACT_FILL_CAP_FREEZE_READY_RESEARCH_ONLY",
+  "gate": {
+    "may_create_order_or_broker_path": false,
+    "may_enable_live_trading": false,
+    "may_enable_paper_trading": false,
+    "may_treat_9_symbol_caps_as_fill_calibrated_research_caps": true,
+    "paper_validation_ready": false
+  },
+  "live_allowed": false,
+  "order_endpoint_used": false,
+  "order_path_created": false,
+  "paper_allowed": false,
+  "paper_validation_ready": false,
+  "private_endpoint_used": false,
+  "real_money_allowed": false,
+  "recommended_symbol_caps_eur": {
+    "ADAUSDT": 75000.0,
+    "AVAXUSDT": 25000.0,
+    "BNBUSDT": 475000.0,
+    "BTCUSDT": 2000000.0,
+    "DOGEUSDT": 400000.0,
+    "ETHUSDT": 1000000.0,
+    "LINKUSDT": 100000.0,
+    "SOLUSDT": 575000.0,
+    "XRPUSDT": 500000.0
+  },
+  "research_only": true,
+  "signed_endpoint_used": false,
+  "sizing_changed": false,
+  "source_btc_exact_fill_summary": "/Users/mac/Documents/Retail-Trading-System/structural_compounding_lab/output/multi_symbol_btc_exact_fill_cap_calibration_court_001/multi_symbol_btc_exact_fill_cap_calibration_summary.json",
+  "source_eight_symbol_exact_fill_summary": "/Users/mac/Documents/Retail-Trading-System/structural_compounding_lab/output/multi_symbol_exact_fill_symbol_cap_calibration_court_001/multi_symbol_exact_fill_symbol_cap_calibration_summary.json",
+  "strategy_logic_changed": false,
+  "thresholds_tuned": false
+}

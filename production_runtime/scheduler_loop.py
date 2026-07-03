@@ -66,7 +66,7 @@ def _config() -> MultiSymbolForwardRuntimeConfig:
         output_root=resolve_project_path(
             os.getenv("RTS_RUNTIME_OUTPUT_ROOT", f"structural_compounding_lab/output/{OUTPUT_FOLDER_NAME}")
         ),
-        seed_tail_rows=int(os.getenv("RTS_SEED_TAIL_ROWS", "1440")),
+        seed_tail_rows=int(os.getenv("RTS_SEED_TAIL_ROWS", "43200")),
         max_catchup_minutes=int(os.getenv("RTS_MAX_CATCHUP_MINUTES", "10080")),
         throttle_seconds=float(os.getenv("RTS_SYMBOL_THROTTLE_SECONDS", "0.05")),
     )

@@ -3,6 +3,14 @@
 This repository is the production-oriented extraction of the local research
 workspace. It is designed for a small Hetzner VPS and Docker Compose.
 
+Current target server baseline:
+
+- Hetzner CPX22 Regular Performance
+- Falkenstein
+- 2 vCPU / 4 GB RAM / 80 GB SSD
+- Docker Compose runtime, API, and production dashboard
+- no full historical research archives shipped
+
 It intentionally excludes:
 
 - full historical CSV archives;
@@ -29,6 +37,10 @@ Safety defaults:
 - `real_money_allowed=false`
 - `short_selling_allowed=false`
 - no production order path is enabled by default
+
+The production scheduler seeds itself from
+`structural_compounding_lab/runtime_seed/` on first boot. That seed contains
+recent runtime context only; full historical CSV archives remain excluded.
 
 ## Local smoke run
 
@@ -63,4 +75,3 @@ docker compose -f deploy/docker-compose.prod.yml --profile demo up -d demo-testn
 
 Do not add production/mainnet keys until a separate live-trading approval and
 preflight gate exists.
-

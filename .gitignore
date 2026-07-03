@@ -21,9 +21,10 @@ data_storage/
 structural_compounding_lab/data_storage/
 structural_compounding_lab/output/
 output/
+!structural_compounding_lab/runtime_seed/
+!structural_compounding_lab/runtime_seed/**
 logs/
 
 *.log
 *.pid
 *.tmp
-
