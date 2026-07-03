@@ -5,7 +5,7 @@ import csv
 import json
 import os
 import smtplib
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from email.message import EmailMessage
@@ -77,6 +77,8 @@ def _jsonable(value: Any) -> Any:
         return decimal_to_plain(value)
     if isinstance(value, Path):
         return str(value)
+    if is_dataclass(value) and not isinstance(value, type):
+        return _jsonable(asdict(value))
     if hasattr(value, "isoformat"):
         return value.isoformat()
     if isinstance(value, dict):
