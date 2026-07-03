@@ -829,9 +829,11 @@ def _strategy_event_rows(
     selected_trade_rows: list[dict[str, Any]],
     candidate_by_signature: dict[str, dict[str, Any]],
     existing_keys: set[str],
+    decision_start_by_symbol: dict[str, pd.Timestamp] | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     allocator_metadata = _allocator_spec_metadata()
+    decision_start_by_symbol = decision_start_by_symbol or {}
     for trade in selected_trade_rows:
         signature = _trade_signature(trade)
         candidate = candidate_by_signature.get(signature, {})
@@ -839,6 +841,8 @@ def _strategy_event_rows(
         trade_id = str(trade.get("trade_id") or candidate.get("trade_id") or "")
         entry_time = _iso(trade.get("entry_time") or candidate.get("entry_time") or candidate.get("entry_timestamp"))
         exit_time = _iso(trade.get("exit_time") or candidate.get("exit_time") or candidate.get("exit_timestamp"))
+        decision_start = decision_start_by_symbol.get(symbol)
+        decision_start_text = decision_start.isoformat() if decision_start is not None else ""
         position_notional_eur = _position_notional_eur(trade, candidate)
         common = {
             "symbol": symbol,
@@ -926,7 +930,7 @@ def _strategy_event_rows(
                 "source_1m_count": "",
                 "closed_1h_decision_slot_processed": True,
                 "historical_warm_start_context_only": False,
-                "decision_start_cutoff": "",
+                "decision_start_cutoff": decision_start_text,
                 "entry_time": entry_time,
                 "exit_time": exit_time if event_type == "EXIT" else "",
                 "total_equity_after_event_eur": trade.get("total_after_exit_before_year_tax", "") if event_type == "EXIT" else trade.get("active_before_exit", ""),
@@ -940,13 +944,41 @@ def _strategy_event_rows(
     return rows
 
 
+def _candidate_timestamp(row: dict[str, Any]) -> pd.Timestamp | None:
+    for key in ("entry_timestamp", "entry_time", "timestamp", "decision_slot"):
+        value = row.get(key)
+        if value in (None, ""):
+            continue
+        parsed = pd.to_datetime(value, utc=True, errors="coerce")
+        if pd.isna(parsed):
+            continue
+        stamp = pd.Timestamp(parsed)
+        if stamp.tzinfo is not None:
+            stamp = stamp.tz_convert("UTC").tz_localize(None)
+        return stamp
+    return None
+
+
+def _is_at_or_after_decision_start(row: dict[str, Any], decision_start_by_symbol: dict[str, pd.Timestamp]) -> bool:
+    symbol = str(row.get("symbol") or "")
+    decision_start = decision_start_by_symbol.get(symbol)
+    if decision_start is None:
+        return True
+    timestamp = _candidate_timestamp(row)
+    if timestamp is None:
+        return False
+    return timestamp >= decision_start
+
+
 def _evaluate_forward_strategy_events(
     config: MultiSymbolForwardRuntimeConfig,
     symbol_results: list[dict[str, Any]],
     existing_keys: set[str],
+    decision_start_by_symbol: dict[str, pd.Timestamp] | None = None,
 ) -> dict[str, Any]:
     priority_symbols = _load_priority_symbols(config)
     symbol_caps = _load_symbol_caps(config)
+    decision_start_by_symbol = decision_start_by_symbol or {}
     symbol_eval_results: list[dict[str, Any]] = []
     candidates: list[dict[str, Any]] = []
     cost_rejected: list[dict[str, Any]] = []
@@ -967,6 +999,15 @@ def _evaluate_forward_strategy_events(
         symbol_eval_results.append(eval_result["summary"])
         candidates.extend(eval_result.get("candidate_rows", []))
         cost_rejected.extend(eval_result.get("cost_rejected_rows", []))
+    pre_activation_candidates = [
+        row for row in candidates if not _is_at_or_after_decision_start(row, decision_start_by_symbol)
+    ]
+    pre_activation_cost_rejected = [
+        row for row in cost_rejected if not _is_at_or_after_decision_start(row, decision_start_by_symbol)
+    ]
+    if decision_start_by_symbol:
+        candidates = [row for row in candidates if _is_at_or_after_decision_start(row, decision_start_by_symbol)]
+        cost_rejected = [row for row in cost_rejected if _is_at_or_after_decision_start(row, decision_start_by_symbol)]
     candidates = sorted(
         candidates,
         key=lambda row: (
@@ -1013,9 +1054,14 @@ def _evaluate_forward_strategy_events(
             "trade_rows": [],
             "rejected_rows": [],
             "yearly_rows": [],
-        }
+    }
     candidate_by_signature = {_trade_signature(row): row for row in candidates}
-    event_rows = _strategy_event_rows(portfolio.get("trade_rows", []), candidate_by_signature, existing_keys)
+    event_rows = _strategy_event_rows(
+        portfolio.get("trade_rows", []),
+        candidate_by_signature,
+        existing_keys,
+        decision_start_by_symbol=decision_start_by_symbol,
+    )
     _write_replay_csv(config.output_root / "ledger" / "forward_strategy_all_symbol_candidates_before_6h_context.csv", candidates_before_6h_context)
     _write_replay_csv(config.output_root / "ledger" / "forward_strategy_all_symbol_candidates.csv", candidates)
     _write_replay_csv(config.output_root / "ledger" / "forward_strategy_selected_trades.csv", portfolio.get("trade_rows", []))
@@ -1029,6 +1075,15 @@ def _evaluate_forward_strategy_events(
         "spot_compatible_long_only": SPOT_COMPATIBLE_LONG_ONLY,
         "short_selling_allowed": SHORT_SELLING_ALLOWED,
         "short_candidates_rejected_for_spot": len(short_rejected_for_spot),
+        "seed_context_activation_guard": {
+            "enabled": bool(decision_start_by_symbol),
+            "decision_start_by_symbol": {
+                symbol: value.isoformat() for symbol, value in decision_start_by_symbol.items()
+            },
+            "pre_activation_candidate_rows_removed": len(pre_activation_candidates),
+            "pre_activation_cost_rejected_rows_removed": len(pre_activation_cost_rejected),
+            "seed_context_only_not_counted_as_forward_pnl": bool(decision_start_by_symbol),
+        },
         "six_h_context_overlay": six_h_context_summary,
         "priority_symbols": priority_symbols,
         "symbol_caps_eur": symbol_caps,
@@ -1860,7 +1915,12 @@ def run_once(config: MultiSymbolForwardRuntimeConfig | None = None) -> dict[str,
             symbol_results.append(result)
             if config.throttle_seconds > 0:
                 time.sleep(config.throttle_seconds)
-        strategy_eval = _evaluate_forward_strategy_events(config, symbol_results, existing_keys)
+        strategy_eval = _evaluate_forward_strategy_events(
+            config,
+            symbol_results,
+            existing_keys,
+            decision_start_by_symbol=decision_start_by_symbol,
+        )
         strategy_event_rows = strategy_eval["event_rows"]
         new_decisions.extend(strategy_event_rows)
         appended_decisions = _append_csv(paths["decision_ledger"], new_decisions)

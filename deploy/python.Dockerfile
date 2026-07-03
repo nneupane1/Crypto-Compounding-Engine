@@ -16,9 +16,9 @@ RUN pip install --upgrade pip \
     && pip install -r /app/requirements-prod.txt
 
 COPY structural_compounding_lab /app/structural_compounding_lab
+COPY config /app/config
 COPY production_api /app/production_api
 COPY production_runtime /app/production_runtime
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["python", "-m", "production_runtime.scheduler_loop"]
-

@@ -42,6 +42,13 @@ The production scheduler seeds itself from
 `structural_compounding_lab/runtime_seed/` on first boot. That seed contains
 recent runtime context only; full historical CSV archives remain excluded.
 
+The seed is guarded by
+`structural_compounding_lab/runtime_seed/output/multi_symbol_forward_runtime_earned_parallel_slots/checkpoints/historical_warm_start_manifest.json`.
+That manifest marks the packaged candles as context memory only. The runtime may
+use them for indicators, structure, 15m/1h/6h context, and catch-up continuity,
+but it must not count pre-activation seed candles as forward PnL, trade events,
+or notification triggers.
+
 ## Local smoke run
 
 ```bash

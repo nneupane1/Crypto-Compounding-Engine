@@ -1,0 +1,32 @@
+{
+  "manifest_name": "production_runtime_seed_context_activation_guard",
+  "final_classification": "PRODUCTION_SEED_CONTEXT_ONLY_FORWARD_DECISION_GUARD",
+  "created_at_utc": "2026-07-03T12:30:00+00:00",
+  "purpose": "Use packaged 30-day 1m seed data only as indicator/context memory. Do not count historical seed candles as new forward decisions, PnL, trade events, or emails.",
+  "warmup_context_only": true,
+  "historical_validation_warm_start": false,
+  "seed_context_only_not_counted_as_forward_pnl": true,
+  "decision_start_by_symbol": {
+    "ADAUSDT": "2026-07-03T11:00:00+00:00",
+    "LINKUSDT": "2026-07-03T11:00:00+00:00",
+    "BNBUSDT": "2026-07-03T11:00:00+00:00",
+    "XRPUSDT": "2026-07-03T11:00:00+00:00",
+    "AVAXUSDT": "2026-07-03T11:00:00+00:00",
+    "DOGEUSDT": "2026-07-03T11:00:00+00:00",
+    "ETHUSDT": "2026-07-03T11:00:00+00:00",
+    "BTCUSDT": "2026-07-03T11:00:00+00:00",
+    "SOLUSDT": "2026-07-03T11:00:00+00:00"
+  },
+  "first_forward_decision_policy": "Only complete 1H candles whose 1H start is at or after the symbol decision_start may produce forward decision rows, strategy PnL, trade events, or emails.",
+  "research_only": true,
+  "paper_validation_ready": false,
+  "paper_allowed": false,
+  "live_allowed": false,
+  "real_money_allowed": false,
+  "order_path_created": false,
+  "broker_path_created": false,
+  "private_endpoint_used": false,
+  "signed_endpoint_used": false,
+  "account_endpoint_used": false,
+  "order_endpoint_used": false
+}
