@@ -22,6 +22,7 @@ from structural_compounding_lab.execution.binance_live_spot_client import (
     BinanceLiveSpotSafetyError,
     build_client_order_id,
     decimal_to_plain,
+    floor_to_step,
     parse_symbol_rules,
     quantity_for_notional,
     redact_secret,
@@ -533,17 +534,38 @@ def run_once(root: Path, *, symbol: str) -> dict[str, Any]:
     if executed_qty <= 0:
         raise BinanceLiveSpotExecutionError("buy_order_returned_zero_executed_quantity")
 
+    account_after_buy = client.account()
+    base_after_buy = _asset_balance(account_after_buy, rules.base_asset)
+    sellable_qty = floor_to_step(max(Decimal("0"), base_after_buy - base_before), rules.step_size)
+    if sellable_qty <= 0:
+        raise BinanceLiveSpotExecutionError("post_fee_buy_balance_not_sellable")
+
     sell_seed = f"{signal_seed}|SELL|{buy_client_order_id}"
     sell_client_order_id = build_client_order_id("rtslivesell", sell_seed)
-    sell_intent = DemoOrderIntent(
-        signal_id=sell_seed,
-        symbol=limits.symbol,
-        side="SELL",
-        order_type="MARKET",
-        quantity=executed_qty,
-        reason="tiny_live_spot_smoke_immediate_exit",
-    )
-    sell_response = client.create_order(sell_intent, sell_client_order_id)
+    sell_price = client.ticker_price(limits.symbol)
+    if sellable_qty * sell_price >= rules.min_notional:
+        sell_intent = DemoOrderIntent(
+            signal_id=sell_seed,
+            symbol=limits.symbol,
+            side="SELL",
+            order_type="MARKET",
+            quantity=sellable_qty,
+            reason="tiny_live_spot_smoke_immediate_exit",
+        )
+        sell_response = client.create_order(sell_intent, sell_client_order_id)
+    else:
+        sell_response = client.request(
+            "POST",
+            "/v3/order",
+            params={
+                "symbol": limits.symbol,
+                "side": "SELL",
+                "type": "MARKET",
+                "quoteOrderQty": decimal_to_plain(rules.min_notional),
+                "newClientOrderId": sell_client_order_id,
+            },
+            signed=True,
+        )
     _record_order(root, side="SELL", symbol=limits.symbol, client_order_id=sell_client_order_id, response=sell_response, price=client.ticker_price(limits.symbol), limits=limits)
 
     after_account = client.account()
