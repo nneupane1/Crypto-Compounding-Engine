@@ -27,6 +27,11 @@ from structural_compounding_lab.execution.binance_live_spot_client import (
     redact_secret,
 )
 from structural_compounding_lab.execution.demo_order_models import DemoOrderIntent
+from structural_compounding_lab.execution.usdt_usdc_execution_guard import (
+    ExecutionSignal,
+    USDT_TO_USDC,
+    evaluate_usdt_signal_to_usdc_execution_guard,
+)
 
 
 COURT_NAME = "BINANCE_LIVE_STRATEGY_CANARY_BRIDGE_REAL_MONEY_GUARDED"
@@ -234,6 +239,7 @@ def _candidate_fieldnames() -> list[str]:
         "source_trade_id",
         "source_timestamp",
         "symbol",
+        "execution_symbol",
         "direction",
         "event_type",
         "entry_reference",
@@ -477,6 +483,7 @@ def _candidate_rows(root: Path, source_ledger: Path, *, allow_backlog: bool, loo
             "source_trade_id": trade_id,
             "source_timestamp": ts.isoformat() if ts else "",
             "symbol": symbol,
+            "execution_symbol": USDT_TO_USDC.get(symbol, ""),
             "direction": direction or "long",
             "event_type": event_type or "ENTRY",
             "entry_reference": _source_entry(row),
@@ -541,11 +548,15 @@ def _record_order(root: Path, *, event_type: str, source_trade_id: str, side: st
 def _entry_email(root: Path, position: dict[str, Any]) -> dict[str, Any]:
     return _email(
         root,
-        subject=f"RTS LIVE CANARY ENTRY: {position['symbol']} BUY {position['entry_quote_filled']} {position['quote_asset']}",
+        subject=(
+            f"RTS LIVE CANARY ENTRY: {position['source_symbol']} SIGNAL -> "
+            f"{position['symbol']} BUY {position['entry_quote_filled']} {position['quote_asset']}"
+        ),
         body_lines=[
-            "Tiny real-money live-canary entry submitted from the frozen 9-symbol strategy signal.",
+            "Tiny real-money live-canary entry submitted from the frozen 9-symbol USDT-signal / USDC-execution route.",
             "This is NOT full strategy live deployment.",
             "",
+            f"Source signal symbol: {position['source_symbol']}",
             f"Symbol: {position['symbol']}",
             f"Source trade id: {position['source_trade_id']}",
             f"Entry order id: {position['entry_exchange_order_id']}",
@@ -679,7 +690,19 @@ def _maybe_exit_open_position(root: Path, client: BinanceLiveSpotClient, manifes
 
 
 def _submit_entry(root: Path, client: BinanceLiveSpotClient, manifest: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
-    symbol = str(candidate["symbol"]).upper()
+    source_symbol = str(candidate["symbol"]).upper()
+    guard_decision = evaluate_usdt_signal_to_usdc_execution_guard(
+        ExecutionSignal(
+            source_symbol=source_symbol,
+            side="BUY",
+            order_notional_eur=_parse_decimal(str(manifest["max_order_notional_eur"]), "10"),
+            source_signal_time=str(candidate.get("source_timestamp", "")),
+            signal_id=str(candidate.get("source_trade_id", "")),
+        )
+    )
+    if not guard_decision.accepted:
+        raise BinanceLiveSpotSafetyError("usdt_usdc_execution_guard_blocked:" + ",".join(guard_decision.reasons))
+    symbol = guard_decision.execution_symbol
     exchange_info = client.exchange_info(symbol)
     rules = parse_symbol_rules(exchange_info, symbol)
     price = client.ticker_price(symbol)
@@ -729,6 +752,7 @@ def _submit_entry(root: Path, client: BinanceLiveSpotClient, manifest: dict[str,
         "created_at": _now(),
         "source_trade_id": candidate["source_trade_id"],
         "source_timestamp": candidate["source_timestamp"],
+        "source_symbol": source_symbol,
         "symbol": symbol,
         "base_asset": rules.base_asset,
         "quote_asset": rules.quote_asset,
