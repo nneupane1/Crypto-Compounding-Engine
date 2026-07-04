@@ -29,6 +29,8 @@ The active production runtime is:
 - output-only research/shadow-forward PnL ledgering;
 - optional Binance Spot Testnet demo execution bridge;
 - guarded Binance Spot mainnet tiny-smoke harness for execution plumbing only;
+- guarded Binance Spot mainnet live-strategy canary bridge for tiny capped
+  fresh-signal execution only;
 - lightweight read-only dashboard API and Next.js production dashboard.
 
 Safety defaults:
@@ -104,3 +106,24 @@ Default hard caps:
 
 The harness accepts only dedicated `BINANCE_LIVE_SMOKE_*` keys. Generic live
 keys and demo/testnet keys are rejected.
+
+## Tiny live strategy canary
+
+The live strategy canary is isolated behind the `live-canary` Docker Compose
+profile. It reads the frozen nine-symbol runtime decision ledger and can submit
+only one tiny capped Spot order when all explicit safety confirmations are
+present.
+
+Read the runbook before using it:
+
+`docs/LIVE_STRATEGY_CANARY_RUNBOOK.md`
+
+Default behavior is dry-run only:
+
+```bash
+docker compose -f deploy/docker-compose.prod.yml --profile live-canary run --rm live-canary
+```
+
+This profile does not enable full live trading. It rejects short selling,
+margin, futures, withdrawals, generic keys, demo keys, and historical backlog
+replay by default.

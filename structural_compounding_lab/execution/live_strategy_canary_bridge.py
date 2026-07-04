@@ -1,0 +1,852 @@
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import os
+import smtplib
+from dataclasses import asdict, is_dataclass
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from email.message import EmailMessage
+from pathlib import Path
+from typing import Any
+
+from structural_compounding_lab.common.email_safety import smtp_allowed_for_output_root
+from structural_compounding_lab.common.project_paths import output_root, resolve_project_path
+from structural_compounding_lab.execution.binance_live_spot_client import (
+    BinanceLiveSpotClient,
+    BinanceLiveSpotConfig,
+    BinanceLiveSpotExecutionError,
+    BinanceLiveSpotSafetyError,
+    build_client_order_id,
+    decimal_to_plain,
+    floor_to_step,
+    parse_symbol_rules,
+    quantity_for_notional,
+    redact_secret,
+)
+from structural_compounding_lab.execution.demo_order_models import DemoOrderIntent
+
+
+COURT_NAME = "BINANCE_LIVE_STRATEGY_CANARY_BRIDGE_REAL_MONEY_GUARDED"
+OUTPUT_FOLDER_NAME = "binance_live_strategy_canary_court_001"
+DEFAULT_SOURCE_LEDGER = "multi_symbol_forward_runtime_earned_parallel_slots/ledger/multi_symbol_forward_decision_ledger.csv"
+DEFAULT_SYMBOL_ALLOWLIST = "ADAUSDT,LINKUSDT,BNBUSDT,XRPUSDT,AVAXUSDT,DOGEUSDT,ETHUSDT,BTCUSDT,SOLUSDT"
+DEFAULT_ALERT_TO = "nneupane1@gmail.com"
+
+DRY_RUN_READY = "BINANCE_LIVE_STRATEGY_CANARY_DRY_RUN_READY_NO_ORDER"
+NO_ELIGIBLE = "BINANCE_LIVE_STRATEGY_CANARY_NO_ELIGIBLE_SIGNAL"
+ORDER_SUBMITTED = "BINANCE_LIVE_STRATEGY_CANARY_ORDER_SUBMITTED"
+POSITION_MONITORING = "BINANCE_LIVE_STRATEGY_CANARY_POSITION_MONITORING_NO_ORDER"
+ROUNDTRIP_COMPLETED = "BINANCE_LIVE_STRATEGY_CANARY_ROUNDTRIP_COMPLETED"
+BLOCKED_SAFETY = "BINANCE_LIVE_STRATEGY_CANARY_BLOCKED_SAFETY"
+BLOCKED_NEEDS_KEYS = "BINANCE_LIVE_STRATEGY_CANARY_BLOCKED_NEEDS_KEYS"
+FAILED = "BINANCE_LIVE_STRATEGY_CANARY_FAILED"
+
+REQUIRED_ENABLED_VALUE = "true"
+REQUIRED_CONFIRMATION = "YES_TINY_REAL_MONEY_STRATEGY_CANARY"
+REQUIRED_LOSS_ACK = "I_ACCEPT_MAX_25_EUR_LIVE_CANARY_BUDGET"
+MAX_HARD_ACCOUNT_CAPITAL_EUR = Decimal("1000")
+MAX_HARD_TEST_BUDGET_EUR = Decimal("100")
+MAX_HARD_ORDER_NOTIONAL_EUR = Decimal("10")
+MAX_HARD_DAILY_LOSS_EUR = Decimal("25")
+MAX_OPEN_POSITIONS = 1
+
+FORBIDDEN_ENV_NAMES = {
+    "BINANCE_API_KEY",
+    "BINANCE_API_SECRET",
+    "BINANCE_SECRET",
+    "LIVE_API_KEY",
+    "LIVE_API_SECRET",
+    "BINANCE_DEMO_API_KEY",
+    "BINANCE_DEMO_API_SECRET",
+}
+
+
+def _now_dt() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _now() -> str:
+    return _now_dt().isoformat()
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return decimal_to_plain(value)
+    if isinstance(value, Path):
+        return str(value)
+    if is_dataclass(value) and not isinstance(value, type):
+        return _jsonable(asdict(value))
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    return value
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(json.dumps(_jsonable(payload), indent=2, sort_keys=True), encoding="utf-8")
+    temp.replace(path)
+
+
+def _read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
+    if not path.exists():
+        return dict(default)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return dict(default)
+    return payload if isinstance(payload, dict) else dict(default)
+
+
+def _read_csv(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    with path.open(newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _append_csv(path: Path, row: dict[str, Any], fieldnames: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    exists = path.exists()
+    with path.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        if not exists:
+            writer.writeheader()
+        writer.writerow({key: _jsonable(row.get(key, "")) for key in fieldnames})
+
+
+def _parse_bool(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y"}
+
+
+def _parse_decimal(value: str | None, default: str = "0") -> Decimal:
+    try:
+        return Decimal(str(value if value not in {None, ""} else default))
+    except Exception:
+        return Decimal(default)
+
+
+def _parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _paths(root: Path) -> dict[str, Path]:
+    return {
+        "latest_status": root / "latest_status.json",
+        "safety_manifest": root / "safety_manifest.json",
+        "activation": root / "state" / "activation_state.json",
+        "open_position": root / "state" / "open_position.json",
+        "candidate_ledger": root / "ledger" / "live_canary_signal_candidates.csv",
+        "order_ledger": root / "ledger" / "live_canary_orders.csv",
+        "fill_ledger": root / "ledger" / "live_canary_fills.csv",
+        "roundtrip_ledger": root / "ledger" / "live_canary_roundtrips.csv",
+        "latest_email": root / "alerts" / "latest_live_canary_email.txt",
+        "email_ledger": root / "alerts" / "live_canary_email_ledger.csv",
+    }
+
+
+def _source_timestamp(row: dict[str, str]) -> datetime | None:
+    for key in ("timestamp", "decision_slot", "closed_1h_candle_start", "entry_time", "source_timestamp"):
+        parsed = _parse_timestamp(row.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _source_trade_id(row: dict[str, str]) -> str:
+    return str(row.get("trade_id") or row.get("decision_key") or row.get("source_trade_id") or "").strip()
+
+
+def _source_event_type(row: dict[str, str]) -> str:
+    return str(row.get("event_type") or row.get("order_event_type") or "").strip().upper()
+
+
+def _source_direction(row: dict[str, str]) -> str:
+    return str(row.get("direction") or row.get("side") or "").strip().lower()
+
+
+def _source_symbol(row: dict[str, str]) -> str:
+    return str(row.get("symbol") or "").strip().upper()
+
+
+def _row_is_trade_signal(row: dict[str, str]) -> bool:
+    event = _source_event_type(row)
+    triggered = _parse_bool(row.get("trade_triggered"))
+    accepted = _parse_bool(row.get("setup_accepted"))
+    has_trade_id = bool(_source_trade_id(row))
+    if event == "ENTRY":
+        return True
+    return has_trade_id and (triggered or accepted)
+
+
+def _source_entry(row: dict[str, str]) -> str:
+    return str(row.get("entry_price") or row.get("entry_reference") or "")
+
+
+def _source_stop(row: dict[str, str]) -> str:
+    return str(row.get("initial_stop") or row.get("stop_reference") or "")
+
+
+def _source_target(row: dict[str, str]) -> str:
+    return str(row.get("exit_price") or row.get("target_reference") or "")
+
+
+def _activation_timestamp(root: Path, source_rows: list[dict[str, str]], allow_backlog: bool) -> datetime | None:
+    if allow_backlog:
+        return None
+    path = _paths(root)["activation"]
+    existing = _parse_timestamp(str(_read_json(path, {}).get("activated_after_source_timestamp", "")))
+    if existing is not None:
+        return existing
+    timestamps = [ts for ts in (_source_timestamp(row) for row in source_rows) if ts is not None]
+    watermark = max(timestamps) if timestamps else _now_dt()
+    _write_json(
+        path,
+        {
+            "activated_after_source_timestamp": watermark,
+            "created_at": _now(),
+            "reason": "initial_live_canary_activation_blocks_historical_replay",
+            "allow_backlog_replay": False,
+        },
+    )
+    return watermark
+
+
+def _candidate_fieldnames() -> list[str]:
+    return [
+        "created_at",
+        "source_trade_id",
+        "source_timestamp",
+        "symbol",
+        "direction",
+        "event_type",
+        "entry_reference",
+        "stop_reference",
+        "target_reference",
+        "eligible",
+        "skip_reason",
+        "mode",
+        "canary_order_submitted",
+    ]
+
+
+def _order_fieldnames() -> list[str]:
+    return [
+        "created_at",
+        "event_type",
+        "source_trade_id",
+        "symbol",
+        "side",
+        "client_order_id",
+        "exchange_order_id",
+        "exchange_status",
+        "quantity",
+        "executed_qty",
+        "quote_filled",
+        "reference_price",
+        "max_order_notional_quote",
+        "reason",
+        "real_money_allowed",
+        "production_strategy_order_path_allowed",
+    ]
+
+
+def _fill_fieldnames() -> list[str]:
+    return ["created_at", "symbol", "side", "client_order_id", "price", "qty", "commission", "commission_asset", "trade_id"]
+
+
+def _roundtrip_fieldnames() -> list[str]:
+    return [
+        "created_at",
+        "source_trade_id",
+        "symbol",
+        "entry_client_order_id",
+        "exit_client_order_id",
+        "entry_quote_filled",
+        "exit_quote_filled",
+        "quote_delta",
+        "base_delta",
+        "exit_reason",
+        "result_label",
+    ]
+
+
+def _email(root: Path, *, subject: str, body_lines: list[str]) -> dict[str, Any]:
+    paths = _paths(root)
+    recipient = os.getenv("RTS_ALERT_EMAIL_TO", DEFAULT_ALERT_TO)
+    enabled = _parse_bool(os.getenv("RTS_ALERT_EMAIL_ENABLED"))
+    dry_run = _parse_bool(os.getenv("RTS_ALERT_EMAIL_DRY_RUN"))
+    host = os.getenv("RTS_ALERT_SMTP_HOST", "").strip()
+    sender = os.getenv("RTS_ALERT_EMAIL_FROM", "").strip()
+    username = os.getenv("RTS_ALERT_SMTP_USERNAME", "").strip()
+    password = os.getenv("RTS_ALERT_SMTP_PASSWORD", "")
+    body = "\n".join(body_lines + ["", f"Artifact root: {root}"])
+    paths["latest_email"].parent.mkdir(parents=True, exist_ok=True)
+    paths["latest_email"].write_text(f"To: {recipient}\nSubject: {subject}\n\n{body}\n", encoding="utf-8")
+    sent = False
+    note = "draft_written"
+    smtp_allowed, smtp_note = smtp_allowed_for_output_root(root)
+    if not smtp_allowed:
+        note = smtp_note
+    if smtp_allowed and enabled and not dry_run and host and sender:
+        msg = EmailMessage()
+        msg["From"] = sender
+        msg["To"] = recipient
+        msg["Subject"] = subject
+        msg.set_content(body)
+        try:
+            with smtplib.SMTP(host, int(os.getenv("RTS_ALERT_SMTP_PORT", "587") or "587"), timeout=20) as smtp:
+                smtp.starttls()
+                if username or password:
+                    smtp.login(username, password)
+                smtp.send_message(msg)
+            sent = True
+            note = "smtp_sent"
+        except Exception as exc:  # noqa: BLE001
+            note = "smtp_failed_draft_written:" + redact_secret(str(exc), password)
+    record = {
+        "created_at": _now(),
+        "subject": subject,
+        "recipient": recipient,
+        "email_sent": sent,
+        "email_draft_written": True,
+        "email_note": note,
+        "email_path": str(paths["latest_email"]),
+    }
+    _append_csv(
+        paths["email_ledger"],
+        record,
+        ["created_at", "subject", "recipient", "email_sent", "email_draft_written", "email_note", "email_path"],
+    )
+    return record
+
+
+def _limits() -> dict[str, Any]:
+    max_account = _parse_decimal(os.getenv("RTS_LIVE_CANARY_MAX_ACCOUNT_CAPITAL_EUR"), "100")
+    max_budget = _parse_decimal(os.getenv("RTS_LIVE_CANARY_MAX_TEST_BUDGET_EUR"), "50")
+    max_order = _parse_decimal(os.getenv("RTS_LIVE_CANARY_MAX_ORDER_NOTIONAL_EUR"), "10")
+    max_daily_loss = _parse_decimal(os.getenv("RTS_LIVE_CANARY_MAX_DAILY_LOSS_EUR"), "10")
+    max_open = int(os.getenv("RTS_LIVE_CANARY_MAX_OPEN_POSITIONS", "1") or "1")
+    return {
+        "max_account_capital_eur": max_account,
+        "max_test_budget_eur": max_budget,
+        "max_order_notional_eur": max_order,
+        "max_daily_loss_eur": max_daily_loss,
+        "max_open_positions": max_open,
+        "caps_ok": (
+            Decimal("0") < max_account <= MAX_HARD_ACCOUNT_CAPITAL_EUR
+            and Decimal("0") < max_budget <= MAX_HARD_TEST_BUDGET_EUR
+            and Decimal("0") < max_order <= MAX_HARD_ORDER_NOTIONAL_EUR
+            and Decimal("0") < max_daily_loss <= MAX_HARD_DAILY_LOSS_EUR
+            and max_open == MAX_OPEN_POSITIONS
+        ),
+    }
+
+
+def _confirmations_present() -> bool:
+    return (
+        os.getenv("RTS_LIVE_CANARY_ENABLED", "").strip().lower() == REQUIRED_ENABLED_VALUE
+        and os.getenv("RTS_LIVE_CANARY_CONFIRM", "").strip() == REQUIRED_CONFIRMATION
+        and os.getenv("RTS_LIVE_CANARY_I_UNDERSTAND_MAX_LOSS", "").strip() == REQUIRED_LOSS_ACK
+    )
+
+
+def _forbidden_env_present() -> list[str]:
+    return [name for name in sorted(FORBIDDEN_ENV_NAMES) if os.getenv(name)]
+
+
+def _safety_manifest(mode: str, root: Path, source_ledger: Path) -> dict[str, Any]:
+    limits = _limits()
+    credentials_present = bool(os.getenv("BINANCE_LIVE_SMOKE_API_KEY") and os.getenv("BINANCE_LIVE_SMOKE_API_SECRET"))
+    confirmations = _confirmations_present()
+    forbidden = _forbidden_env_present()
+    orders_allowed = mode == "execute_once" and limits["caps_ok"] and credentials_present and confirmations and not forbidden
+    return {
+        "court_name": COURT_NAME,
+        "created_at": _now(),
+        "mode": mode,
+        "source_ledger": source_ledger,
+        "output_root": root,
+        "credentials_present": credentials_present,
+        "dedicated_live_smoke_keys_required": True,
+        "generic_or_demo_keys_present": forbidden,
+        "generic_or_demo_keys_rejected": True,
+        "run_confirmation_present": confirmations,
+        **limits,
+        "orders_allowed_in_this_mode": orders_allowed,
+        "tiny_live_canary_only": True,
+        "live_canary_order_path_allowed": orders_allowed,
+        "production_strategy_order_path_allowed": False,
+        "full_live_trading_allowed": False,
+        "strategy_scheduler_live_allowed": False,
+        "paper_validation_ready": False,
+        "real_money_allowed": orders_allowed,
+        "spot_mainnet_only": True,
+        "short_selling_allowed": False,
+        "margin_allowed": False,
+        "futures_allowed": False,
+        "withdrawal_allowed": False,
+        "deposit_allowed": False,
+        "account_transfer_allowed": False,
+    }
+
+
+def _validate_manifest(manifest: dict[str, Any]) -> None:
+    if manifest["generic_or_demo_keys_present"]:
+        raise BinanceLiveSpotSafetyError("forbidden generic/demo key variables present")
+    if not manifest["caps_ok"]:
+        raise BinanceLiveSpotSafetyError("live canary caps exceed hard-coded safety limits")
+    if manifest["max_open_positions"] != 1:
+        raise BinanceLiveSpotSafetyError("live canary allows exactly one open position")
+
+
+def _asset_balance(account: dict[str, Any], asset: str) -> Decimal:
+    for row in account.get("balances", []):
+        if str(row.get("asset", "")).upper() == asset.upper():
+            return Decimal(str(row.get("free", "0"))) + Decimal(str(row.get("locked", "0")))
+    return Decimal("0")
+
+
+def _daily_closed_loss(root: Path) -> Decimal:
+    rows = _read_csv(_paths(root)["roundtrip_ledger"])
+    today = _now_dt().date()
+    loss = Decimal("0")
+    for row in rows:
+        ts = _parse_timestamp(row.get("created_at"))
+        if ts is None or ts.date() != today:
+            continue
+        delta = _parse_decimal(row.get("quote_delta"), "0")
+        if delta < 0:
+            loss += abs(delta)
+    return loss
+
+
+def _candidate_rows(root: Path, source_ledger: Path, *, allow_backlog: bool, lookback_hours: int, symbol_allowlist: set[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    rows = _read_csv(source_ledger)
+    activation = _activation_timestamp(root, rows, allow_backlog)
+    cutoff = _now_dt() - timedelta(hours=lookback_hours) if lookback_hours > 0 else None
+    existing_order_rows = _read_csv(_paths(root)["order_ledger"])
+    processed = {row.get("source_trade_id", "") for row in existing_order_rows if row.get("source_trade_id")}
+    candidates: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for row in rows:
+        ts = _source_timestamp(row)
+        trade_id = _source_trade_id(row)
+        symbol = _source_symbol(row)
+        direction = _source_direction(row)
+        event_type = _source_event_type(row)
+        reason = ""
+        if not _row_is_trade_signal(row):
+            reason = "not_a_trade_entry_signal"
+        elif not trade_id:
+            reason = "missing_trade_id"
+        elif trade_id in processed:
+            reason = "already_processed"
+        elif ts is None:
+            reason = "invalid_timestamp"
+        elif activation is not None and ts <= activation:
+            reason = "before_or_at_live_canary_activation_checkpoint"
+        elif cutoff is not None and ts < cutoff:
+            reason = "outside_lookback"
+        elif symbol not in symbol_allowlist:
+            reason = "symbol_not_allowlisted"
+        elif event_type and event_type != "ENTRY":
+            reason = "source_event_not_entry"
+        elif direction not in {"long", "buy", ""}:
+            reason = "spot_live_canary_rejects_short_or_non_long"
+        elif str(row.get("order_created", row.get("live_trade_created", "false"))).lower() == "true":
+            reason = "source_claims_order_created"
+        candidate = {
+            "created_at": _now(),
+            "source_trade_id": trade_id,
+            "source_timestamp": ts.isoformat() if ts else "",
+            "symbol": symbol,
+            "direction": direction or "long",
+            "event_type": event_type or "ENTRY",
+            "entry_reference": _source_entry(row),
+            "stop_reference": _source_stop(row),
+            "target_reference": _source_target(row),
+            "eligible": not bool(reason),
+            "skip_reason": reason,
+            "mode": "",
+            "canary_order_submitted": False,
+            "raw": row,
+        }
+        if reason:
+            if reason not in {"not_a_trade_entry_signal", "already_processed", "outside_lookback"}:
+                skipped.append(candidate)
+            continue
+        candidates.append(candidate)
+    candidates.sort(key=lambda item: _parse_timestamp(str(item["source_timestamp"])) or datetime.min.replace(tzinfo=timezone.utc))
+    return candidates, skipped, len(rows)
+
+
+def _record_order(root: Path, *, event_type: str, source_trade_id: str, side: str, symbol: str, client_order_id: str, response: dict[str, Any], price: Decimal, max_order: Decimal, reason: str, real_money_allowed: bool) -> None:
+    _append_csv(
+        _paths(root)["order_ledger"],
+        {
+            "created_at": _now(),
+            "event_type": event_type,
+            "source_trade_id": source_trade_id,
+            "symbol": symbol,
+            "side": side,
+            "client_order_id": client_order_id,
+            "exchange_order_id": str(response.get("orderId", "")),
+            "exchange_status": str(response.get("status", "")),
+            "quantity": str(response.get("origQty", "")),
+            "executed_qty": str(response.get("executedQty", "0")),
+            "quote_filled": str(response.get("cummulativeQuoteQty", "0")),
+            "reference_price": price,
+            "max_order_notional_quote": max_order,
+            "reason": reason,
+            "real_money_allowed": real_money_allowed,
+            "production_strategy_order_path_allowed": False,
+        },
+        _order_fieldnames(),
+    )
+    for fill in response.get("fills", []) or []:
+        _append_csv(
+            _paths(root)["fill_ledger"],
+            {
+                "created_at": _now(),
+                "symbol": symbol,
+                "side": side,
+                "client_order_id": client_order_id,
+                "price": fill.get("price", ""),
+                "qty": fill.get("qty", ""),
+                "commission": fill.get("commission", ""),
+                "commission_asset": fill.get("commissionAsset", ""),
+                "trade_id": fill.get("tradeId", ""),
+            },
+            _fill_fieldnames(),
+        )
+
+
+def _entry_email(root: Path, position: dict[str, Any]) -> dict[str, Any]:
+    return _email(
+        root,
+        subject=f"RTS LIVE CANARY ENTRY: {position['symbol']} BUY {position['entry_quote_filled']} {position['quote_asset']}",
+        body_lines=[
+            "Tiny real-money live-canary entry submitted from the frozen 9-symbol strategy signal.",
+            "This is NOT full strategy live deployment.",
+            "",
+            f"Symbol: {position['symbol']}",
+            f"Source trade id: {position['source_trade_id']}",
+            f"Entry order id: {position['entry_exchange_order_id']}",
+            f"Executed quantity: {position['entry_executed_qty']} {position['base_asset']}",
+            f"Quote filled: {position['entry_quote_filled']} {position['quote_asset']}",
+            f"Stop reference: {position.get('stop_reference', '')}",
+            f"Target reference: {position.get('target_reference', '')}",
+            "",
+            "Safety: max one open canary position, tiny notional cap, spot only, long only, no margin, no futures, no withdrawals.",
+        ],
+    )
+
+
+def _exit_email(root: Path, roundtrip: dict[str, Any]) -> dict[str, Any]:
+    label = "CONGRATULATIONS PROFIT" if _parse_decimal(str(roundtrip.get("quote_delta")), "0") > 0 else "LOSS CONTROL"
+    return _email(
+        root,
+        subject=f"RTS LIVE CANARY EXIT {label}: {roundtrip['symbol']} quote_delta {roundtrip['quote_delta']}",
+        body_lines=[
+            "Tiny real-money live-canary exit completed.",
+            "This is NOT full strategy live deployment.",
+            "",
+            f"Symbol: {roundtrip['symbol']}",
+            f"Source trade id: {roundtrip['source_trade_id']}",
+            f"Entry order id: {roundtrip['entry_client_order_id']}",
+            f"Exit order id: {roundtrip['exit_client_order_id']}",
+            f"Entry quote filled: {roundtrip['entry_quote_filled']}",
+            f"Exit quote filled: {roundtrip['exit_quote_filled']}",
+            f"PnL / quote delta: {roundtrip['quote_delta']}",
+            f"Exit reason: {roundtrip['exit_reason']}",
+            "",
+            "Safety: spot only, long only, no margin, no futures, no withdrawals.",
+        ],
+    )
+
+
+def _maybe_exit_open_position(root: Path, client: BinanceLiveSpotClient, manifest: dict[str, Any]) -> dict[str, Any] | None:
+    position_path = _paths(root)["open_position"]
+    position = _read_json(position_path, {})
+    if not position.get("open"):
+        return None
+    symbol = str(position["symbol"]).upper()
+    exchange_info = client.exchange_info(symbol)
+    rules = parse_symbol_rules(exchange_info, symbol)
+    price = client.ticker_price(symbol)
+    target = _parse_decimal(str(position.get("target_reference", "")), "0")
+    stop = _parse_decimal(str(position.get("stop_reference", "")), "0")
+    exit_reason = ""
+    if target > 0 and price >= target:
+        exit_reason = "target_reference_reached"
+    elif stop > 0 and price <= stop:
+        exit_reason = "stop_reference_reached"
+    if not exit_reason:
+        return {
+            **manifest,
+            "final_classification": POSITION_MONITORING,
+            "reason": "open_position_no_exit_condition",
+            "symbol": symbol,
+            "current_price": price,
+            "target_reference": target,
+            "stop_reference": stop,
+            "orders_submitted": 0,
+            "open_position": position,
+            "real_money_allowed": False,
+            "live_canary_order_path_allowed": False,
+        }
+    before = client.account()
+    base_before = _asset_balance(before, rules.base_asset)
+    quote_before = _asset_balance(before, rules.quote_asset)
+    base_at_entry = _parse_decimal(str(position.get("base_balance_before_entry", "0")), "0")
+    sell_qty = floor_to_step(max(Decimal("0"), base_before - base_at_entry), rules.step_size)
+    if sell_qty * price < rules.min_notional:
+        raise BinanceLiveSpotSafetyError("open canary position is below Binance minimum sell notional")
+    seed = f"{COURT_NAME}|EXIT|{position['source_trade_id']}|{_now()}"
+    client_order_id = build_client_order_id("rtscanx", seed)
+    intent = DemoOrderIntent(
+        signal_id=seed,
+        symbol=symbol,
+        side="SELL",
+        order_type="MARKET",
+        quantity=sell_qty,
+        reason=f"live_strategy_canary_exit_{exit_reason}",
+    )
+    response = client.create_order(intent, client_order_id)
+    _record_order(
+        root,
+        event_type="EXIT",
+        source_trade_id=str(position["source_trade_id"]),
+        side="SELL",
+        symbol=symbol,
+        client_order_id=client_order_id,
+        response=response,
+        price=price,
+        max_order=_parse_decimal(str(manifest["max_order_notional_eur"]), "10"),
+        reason=f"live_strategy_canary_exit_{exit_reason}",
+        real_money_allowed=True,
+    )
+    after = client.account()
+    quote_after = _asset_balance(after, rules.quote_asset)
+    base_after = _asset_balance(after, rules.base_asset)
+    roundtrip = {
+        "created_at": _now(),
+        "source_trade_id": position["source_trade_id"],
+        "symbol": symbol,
+        "entry_client_order_id": position["entry_client_order_id"],
+        "exit_client_order_id": client_order_id,
+        "entry_quote_filled": position["entry_quote_filled"],
+        "exit_quote_filled": str(response.get("cummulativeQuoteQty", "0")),
+        "quote_delta": quote_after - quote_before - _parse_decimal(str(position.get("entry_quote_spent_delta", "0")), "0"),
+        "base_delta": base_after - _parse_decimal(str(position.get("base_balance_before_entry", "0")), "0"),
+        "exit_reason": exit_reason,
+        "result_label": "PROFIT" if quote_after > quote_before else "LOSS_OR_FLAT",
+    }
+    _append_csv(_paths(root)["roundtrip_ledger"], roundtrip, _roundtrip_fieldnames())
+    position["open"] = False
+    position["closed_at"] = _now()
+    position["exit_client_order_id"] = client_order_id
+    position["exit_exchange_order_id"] = str(response.get("orderId", ""))
+    position["exit_reason"] = exit_reason
+    _write_json(position_path, position)
+    email = _exit_email(root, roundtrip)
+    return {
+        **manifest,
+        "final_classification": ROUNDTRIP_COMPLETED,
+        "reason": "open_canary_position_exit_submitted",
+        "orders_submitted": 1,
+        "exit_order_status": str(response.get("status", "")),
+        "roundtrip": roundtrip,
+        "email": email,
+    }
+
+
+def _submit_entry(root: Path, client: BinanceLiveSpotClient, manifest: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+    symbol = str(candidate["symbol"]).upper()
+    exchange_info = client.exchange_info(symbol)
+    rules = parse_symbol_rules(exchange_info, symbol)
+    price = client.ticker_price(symbol)
+    max_order = _parse_decimal(str(manifest["max_order_notional_eur"]), "10")
+    quantity = quantity_for_notional(max_order, price, rules)
+    estimated_notional = quantity * price
+    if estimated_notional > max_order:
+        raise BinanceLiveSpotSafetyError("computed canary order notional exceeds cap")
+    if estimated_notional > _parse_decimal(str(manifest["max_test_budget_eur"]), "50"):
+        raise BinanceLiveSpotSafetyError("computed canary order exceeds test budget")
+    if _daily_closed_loss(root) >= _parse_decimal(str(manifest["max_daily_loss_eur"]), "10"):
+        raise BinanceLiveSpotSafetyError("daily canary loss cap reached")
+    if client.open_orders(symbol):
+        raise BinanceLiveSpotSafetyError("open Binance orders exist for symbol; refusing canary entry")
+    before = client.account()
+    quote_before = _asset_balance(before, rules.quote_asset)
+    base_before = _asset_balance(before, rules.base_asset)
+    if quote_before < estimated_notional:
+        raise BinanceLiveSpotSafetyError(f"insufficient_{rules.quote_asset}_balance_for_live_canary")
+    seed = f"{COURT_NAME}|ENTRY|{candidate['source_trade_id']}|{_now()}"
+    client_order_id = build_client_order_id("rtscane", seed)
+    intent = DemoOrderIntent(
+        signal_id=seed,
+        symbol=symbol,
+        side="BUY",
+        order_type="MARKET",
+        quantity=quantity,
+        reason="live_strategy_canary_entry_from_frozen_signal",
+    )
+    response = client.create_order(intent, client_order_id)
+    _record_order(
+        root,
+        event_type="ENTRY",
+        source_trade_id=str(candidate["source_trade_id"]),
+        side="BUY",
+        symbol=symbol,
+        client_order_id=client_order_id,
+        response=response,
+        price=price,
+        max_order=max_order,
+        reason="live_strategy_canary_entry_from_frozen_signal",
+        real_money_allowed=True,
+    )
+    after = client.account()
+    position = {
+        "open": True,
+        "created_at": _now(),
+        "source_trade_id": candidate["source_trade_id"],
+        "source_timestamp": candidate["source_timestamp"],
+        "symbol": symbol,
+        "base_asset": rules.base_asset,
+        "quote_asset": rules.quote_asset,
+        "entry_client_order_id": client_order_id,
+        "entry_exchange_order_id": str(response.get("orderId", "")),
+        "entry_status": str(response.get("status", "")),
+        "entry_executed_qty": str(response.get("executedQty", "0")),
+        "entry_quote_filled": str(response.get("cummulativeQuoteQty", "0")),
+        "entry_reference": candidate.get("entry_reference", ""),
+        "stop_reference": candidate.get("stop_reference", ""),
+        "target_reference": candidate.get("target_reference", ""),
+        "base_balance_before_entry": base_before,
+        "base_balance_after_entry": _asset_balance(after, rules.base_asset),
+        "quote_balance_before_entry": quote_before,
+        "quote_balance_after_entry": _asset_balance(after, rules.quote_asset),
+        "entry_quote_spent_delta": quote_before - _asset_balance(after, rules.quote_asset),
+        "max_order_notional_quote": max_order,
+    }
+    _write_json(_paths(root)["open_position"], position)
+    email = _entry_email(root, position)
+    return {
+        **manifest,
+        "final_classification": ORDER_SUBMITTED,
+        "reason": "live_canary_entry_submitted_from_frozen_signal",
+        "orders_submitted": 1,
+        "entry_order_status": str(response.get("status", "")),
+        "open_position": position,
+        "email": email,
+    }
+
+
+def run(mode: str, *, source_ledger: Path | None = None, output_dir: Path | None = None) -> dict[str, Any]:
+    root = resolve_project_path(output_dir or (output_root() / OUTPUT_FOLDER_NAME))
+    source = resolve_project_path(source_ledger or (output_root() / DEFAULT_SOURCE_LEDGER))
+    root.mkdir(parents=True, exist_ok=True)
+    manifest = _safety_manifest(mode, root, source)
+    _write_json(_paths(root)["safety_manifest"], manifest)
+    status: dict[str, Any]
+    try:
+        _validate_manifest(manifest)
+        allowlist = {item.strip().upper() for item in os.getenv("RTS_LIVE_CANARY_SYMBOL_ALLOWLIST", DEFAULT_SYMBOL_ALLOWLIST).split(",") if item.strip()}
+        lookback_hours = int(os.getenv("RTS_LIVE_CANARY_LOOKBACK_HOURS", "168") or "168")
+        allow_backlog = _parse_bool(os.getenv("RTS_LIVE_CANARY_ALLOW_BACKLOG_REPLAY"))
+        candidates, skipped, source_rows = _candidate_rows(root, source, allow_backlog=allow_backlog, lookback_hours=lookback_hours, symbol_allowlist=allowlist)
+        for row in candidates[:50]:
+            row = {key: value for key, value in row.items() if key != "raw"}
+            row["mode"] = mode
+            _append_csv(_paths(root)["candidate_ledger"], row, _candidate_fieldnames())
+        if mode in {"status", "dry_run"}:
+            status = {
+                **manifest,
+                "final_classification": DRY_RUN_READY if candidates else NO_ELIGIBLE,
+                "reason": "dry_run_no_order_submitted" if candidates else "no_fresh_eligible_live_canary_signal",
+                "source_rows_seen": source_rows,
+                "eligible_signals_seen": len(candidates),
+                "skipped_signal_rows": len(skipped),
+                "latest_candidate": {key: value for key, value in (candidates[-1] if candidates else {}).items() if key != "raw"},
+                "orders_submitted": 0,
+                "real_money_allowed": False,
+                "live_canary_order_path_allowed": False,
+                "open_position": _read_json(_paths(root)["open_position"], {}),
+            }
+        elif mode == "execute_once":
+            if not manifest["credentials_present"]:
+                raise BinanceLiveSpotSafetyError("missing_BINANCE_LIVE_SMOKE_API_KEY_or_BINANCE_LIVE_SMOKE_API_SECRET")
+            if not manifest["run_confirmation_present"]:
+                raise BinanceLiveSpotSafetyError("missing explicit live-canary confirmations")
+            config = BinanceLiveSpotConfig.from_env(require_credentials=True, require_confirmation=False)
+            client = BinanceLiveSpotClient(config)
+            exit_status = _maybe_exit_open_position(root, client, manifest)
+            if exit_status is not None:
+                status = exit_status
+            elif not candidates:
+                status = {
+                    **manifest,
+                    "final_classification": NO_ELIGIBLE,
+                    "reason": "no_fresh_eligible_live_canary_signal",
+                    "source_rows_seen": source_rows,
+                    "eligible_signals_seen": 0,
+                    "orders_submitted": 0,
+                    "real_money_allowed": False,
+                    "live_canary_order_path_allowed": False,
+                }
+            else:
+                status = _submit_entry(root, client, manifest, candidates[-1])
+                status["source_rows_seen"] = source_rows
+                status["eligible_signals_seen"] = len(candidates)
+        else:
+            raise BinanceLiveSpotSafetyError(f"unsupported mode: {mode}")
+    except (BinanceLiveSpotSafetyError, BinanceLiveSpotExecutionError, Exception) as exc:  # noqa: BLE001
+        safe_error = redact_secret(
+            str(exc),
+            os.getenv("BINANCE_LIVE_SMOKE_API_KEY", ""),
+            os.getenv("BINANCE_LIVE_SMOKE_API_SECRET", ""),
+        )
+        classification = BLOCKED_NEEDS_KEYS if "BINANCE_LIVE_SMOKE" in safe_error else BLOCKED_SAFETY
+        if not isinstance(exc, BinanceLiveSpotSafetyError):
+            classification = FAILED
+        status = {
+            **manifest,
+            "final_classification": classification,
+            "reason": safe_error,
+            "orders_submitted": 0,
+            "real_money_allowed": False,
+            "live_canary_order_path_allowed": False,
+        }
+    _write_json(_paths(root)["latest_status"], status)
+    return status
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=COURT_NAME)
+    parser.add_argument("--mode", choices=["status", "dry_run", "execute_once"], default="dry_run")
+    parser.add_argument("--source-ledger", type=Path, default=None)
+    parser.add_argument("--output-dir", type=Path, default=None)
+    args = parser.parse_args()
+    print(json.dumps(_jsonable(run(args.mode, source_ledger=args.source_ledger, output_dir=args.output_dir)), indent=2, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()
