@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, time as datetime_time, timedelta, timezone
 from email.message import EmailMessage
+from html import escape
 from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
@@ -1190,6 +1191,57 @@ def _format_plain_table(rows: list[tuple[str, Any]], *, label_width: int = 30) -
     return "\n".join(lines)
 
 
+def _format_compact_value(value: Any) -> str:
+    if value in {None, ""}:
+        return "not recorded"
+    return str(value)
+
+
+def _html_card(*, title: str, hero: str, hero_kind: str, sections: list[tuple[str, list[tuple[str, Any]]]], footer: str) -> str:
+    color = "#11b981" if hero_kind == "profit" else "#ef4444" if hero_kind == "loss" else "#f59e0b"
+    section_html: list[str] = []
+    for heading, rows in sections:
+        section_html.append(f"<h2>{escape(heading)}</h2>")
+        section_html.append("<table>")
+        for label, value in rows:
+            section_html.append(
+                "<tr>"
+                f"<th>{escape(str(label))}</th>"
+                f"<td>{escape(_format_compact_value(value))}</td>"
+                "</tr>"
+            )
+        section_html.append("</table>")
+    return f"""<!doctype html>
+<html>
+  <body style="margin:0;background:#07111f;color:#e5eef9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
+    <div style="max-width:820px;margin:0 auto;padding:28px;">
+      <div style="border:1px solid rgba(148,163,184,.35);border-radius:22px;background:linear-gradient(135deg,#07111f,#0b2532 55%,#111827);box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden;">
+        <div style="padding:26px 30px;border-bottom:1px solid rgba(148,163,184,.25);">
+          <div style="letter-spacing:.16em;text-transform:uppercase;color:#93c5fd;font-size:12px;font-weight:800;">RTS live signal scheduler</div>
+          <h1 style="font-size:30px;line-height:1.15;margin:10px 0 0;color:#ffffff;">{escape(title)}</h1>
+        </div>
+        <div style="padding:28px 30px;">
+          <div style="border-radius:18px;border:1px solid {color};background:rgba(255,255,255,.06);padding:22px;margin-bottom:24px;">
+            <div style="font-size:14px;letter-spacing:.12em;text-transform:uppercase;color:{color};font-weight:900;">Main result</div>
+            <div style="font-size:34px;line-height:1.15;color:#ffffff;font-weight:900;margin-top:8px;">{escape(hero)}</div>
+          </div>
+          {''.join(section_html)}
+          <p style="margin-top:24px;color:#a8b3c7;font-size:13px;line-height:1.6;">{escape(footer)}</p>
+        </div>
+      </div>
+    </div>
+    <style>
+      table {{ width:100%; border-collapse:collapse; margin:10px 0 22px; background:rgba(15,23,42,.72); border-radius:14px; overflow:hidden; }}
+      th,td {{ padding:12px 14px; border-bottom:1px solid rgba(148,163,184,.18); text-align:left; vertical-align:top; }}
+      th {{ width:42%; color:#93a4b8; font-size:12px; text-transform:uppercase; letter-spacing:.08em; }}
+      td {{ color:#f8fafc; font-size:15px; font-weight:700; }}
+      h2 {{ color:#e0f2fe; font-size:18px; margin:20px 0 8px; }}
+    </style>
+  </body>
+</html>
+"""
+
+
 def _event_type(row: dict[str, Any]) -> str:
     explicit = str(row.get("event_type") or row.get("order_event_type") or "").strip().upper()
     if explicit:
@@ -1222,6 +1274,113 @@ def _trade_event_top_line(row: dict[str, Any], *, symbol: str) -> str:
     return f"ENTRY TRIGGERED: {symbol} {side} | amount {_format_eur(amount)} | equity {_format_eur(equity)}"
 
 
+def _trade_event_hero(row: dict[str, Any], *, symbol: str) -> tuple[str, str, str]:
+    event_type = _event_type(row)
+    side = str(row.get("side") or row.get("direction") or "").upper() or "LONG"
+    if event_type == "EXIT":
+        pnl = _float_or_none(row.get("net_pnl_eur", row.get("pnl_eur", ""))) or 0.0
+        total = _format_eur(row.get("total_equity_after_event_eur", row.get("active_equity_after_event_eur", "")))
+        if pnl > 0:
+            return (
+                f"Exit closed: {symbol} {side}",
+                f"CONGRATULATIONS — PROFIT {_format_eur(pnl, signed=True)} | Total equity {total}",
+                "profit",
+            )
+        if pnl < 0:
+            return (
+                f"Exit closed: {symbol} {side}",
+                f"OOPS — LOSS {_format_eur(pnl, signed=True)} | Total equity {total}",
+                "loss",
+            )
+        return (f"Exit closed: {symbol} {side}", f"FLAT EXIT €0.00 | Total equity {total}", "entry")
+    amount = _format_eur(row.get("amount_bought_eur", row.get("position_notional_eur", "")))
+    total = _format_eur(row.get("total_equity_after_event_eur", row.get("active_equity_reference_eur", "")))
+    return (f"Entry opened: {symbol} {side}", f"ENTRY TRIGGERED — amount {amount} | Total equity {total}", "entry")
+
+
+def _plain_section(title: str, rows: list[tuple[str, Any]]) -> list[str]:
+    lines = [title, "-" * len(title)]
+    for label, value in rows:
+        lines.append(f"{label}: {_format_compact_value(value)}")
+    return lines
+
+
+def _trade_event_sections(row: dict[str, Any], *, event_key: str, symbol: str, slot: str, reason: str) -> list[tuple[str, list[tuple[str, Any]]]]:
+    return [
+        (
+            "Event",
+            [
+                ("Event type", _event_type(row)),
+                ("Event key", event_key),
+                ("Symbol", symbol),
+                ("Side / direction", row.get("side", row.get("direction", ""))),
+                ("Decision slot", slot),
+                ("Closed 1H candle start", row.get("closed_1h_candle_start", "")),
+                ("Closed 1H candle end", row.get("closed_1h_candle_end", "")),
+                ("Source 1m rows", row.get("source_1m_count", "")),
+                ("Reason", reason),
+            ],
+        ),
+        (
+            "PnL / equity",
+            [
+                ("Amount bought", _format_eur(row.get("amount_bought_eur", ""))),
+                ("Position notional", _format_eur(row.get("position_notional_eur", ""))),
+                ("Active equity reference", _format_eur(row.get("active_equity_reference_eur", ""))),
+                ("Total equity after event", _format_eur(row.get("total_equity_after_event_eur", ""))),
+                ("Net PnL", _format_eur(row.get("net_pnl_eur", row.get("pnl_eur", "")), signed=True)),
+                ("Risk", _format_eur(row.get("risk_eur", ""))),
+                ("Estimated cost", _format_eur(row.get("estimated_cost_eur", ""))),
+                ("Net R", row.get("net_r", row.get("r_multiple", ""))),
+            ],
+        ),
+        (
+            "Trade technicals",
+            [
+                ("Entry price", row.get("entry_price", row.get("entry_reference", ""))),
+                ("Exit price", row.get("exit_price", row.get("exit_reference", ""))),
+                ("Initial stop", row.get("initial_stop", row.get("stop_reference", ""))),
+                ("Target reference", row.get("target_reference", "")),
+                ("Entry reason", row.get("entry_reason", row.get("reason", ""))),
+                ("Exit reason", row.get("exit_reason", "")),
+                ("Setup class", row.get("setup_class", "")),
+                ("Pattern", row.get("pattern", "")),
+                ("Liquidity event", row.get("liquidity_event_type", "")),
+                ("Entry score", row.get("entry_score", row.get("score", ""))),
+                ("Convexity label", row.get("convexity_label", "")),
+            ],
+        ),
+        (
+            "6H context",
+            [
+                ("Overlay court", row.get("six_h_context_overlay_court", ACTIVE_6H_CONTEXT_OVERLAY_COURT)),
+                ("Overlay classification", row.get("six_h_context_overlay_classification", ACTIVE_6H_CONTEXT_OVERLAY_CLASSIFICATION)),
+                ("Variant", row.get("six_h_context_variant", ACTIVE_6H_CONTEXT_VARIANT)),
+                ("Trend state", row.get("six_h_trend_state", "")),
+                ("Structure state", row.get("six_h_structure_state", "")),
+                ("Alignment", row.get("six_h_alignment", "")),
+                ("Conflict", row.get("six_h_conflict", "")),
+                ("Room to target R", row.get("six_h_room_to_target_r", "")),
+                ("Scale multiplier", row.get("six_h_context_scale_multiplier", "")),
+            ],
+        ),
+        (
+            "Allocator / safety",
+            [
+                ("Allocator spec", row.get("allocator_spec_id", EARNED_PARALLEL_SLOT_SPEC_ID)),
+                ("Allocator action", row.get("allocator_slot_action", "")),
+                ("Max slots at entry", row.get("max_slots_at_entry", row.get("allocator_max_slots_active", ""))),
+                ("Concurrent slots at entry", row.get("concurrent_slots_at_entry", "")),
+                ("Paper validation ready", "false"),
+                ("Live allowed", "false"),
+                ("Real money allowed", "false"),
+                ("Order path created", "false"),
+                ("Broker path created", "false"),
+            ],
+        ),
+    ]
+
+
 def _email_subject_for_trade_event(row: dict[str, Any], *, symbol: str, slot: str) -> str:
     event_type = _event_type(row)
     side = str(row.get("side") or row.get("direction") or "").upper()
@@ -1245,131 +1404,66 @@ def _write_trade_trigger_email(output_root: Path, row: dict[str, Any]) -> dict[s
     safe_name = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in event_key)[:180]
     event_dir = output_root / "alerts" / "multi_asset_trade_events"
     event_path = event_dir / f"{safe_name}.txt"
+    event_html_path = event_dir / f"{safe_name}.html"
     latest_path = event_dir / "latest_multi_asset_trade_trigger_email.txt"
+    latest_html_path = event_dir / "latest_multi_asset_trade_trigger_email.html"
     subject = _email_subject_for_trade_event(row, symbol=symbol, slot=slot)
     reason = str(row.get("reason", ""))
-    body = "\n".join(
+    title, hero, hero_kind = _trade_event_hero(row, symbol=symbol)
+    sections = _trade_event_sections(row, event_key=event_key, symbol=symbol, slot=slot, reason=reason)
+    html_body = _html_card(
+        title=title,
+        hero=hero,
+        hero_kind=hero_kind,
+        sections=sections,
+        footer=(
+            "This is the USDT walk-forward/live-market signal scheduler. It is not a Binance demo email "
+            "and not a live-money execution email. It records frozen strategy signals only; execution is handled separately by the guarded USDC canary."
+        ),
+    )
+    plain_lines: list[str] = [
+        _trade_event_top_line(row, symbol=symbol),
+        "",
+        "RTS LIVE SIGNAL SCHEDULER",
+        "=========================",
+        "Email stream: LIVE MARKET SIGNAL / PRODUCTION MONITORING.",
+        "This is NOT a Binance demo execution email.",
+        "This is NOT a live-money execution email.",
+        "Execution, if any, is handled separately by the guarded USDC canary.",
+        "",
+    ]
+    for section_title, section_rows in sections:
+        plain_lines.extend(_plain_section(section_title, section_rows))
+        plain_lines.append("")
+    plain_lines.extend(
         [
-            _trade_event_top_line(row, symbol=symbol),
+            "Alert policy",
+            "------------",
+            "Entry email is emitted only for an actionable ENTRY event row.",
+            "Exit email is emitted only for an actionable EXIT event row.",
+            "Emails are idempotent and ledgered by event_key.",
             "",
-            "Email stream: LIVE MARKET SIGNAL / PRODUCTION MONITORING.",
-            "This is a live-market scheduler signal email, not a Binance demo order email.",
-            "",
-            "This is NOT a Binance demo execution email.",
-            "This is NOT a live-money execution email.",
-            "This scheduler records live-market strategy signals only unless a separately approved execution adapter exists.",
-            "Spot compatibility: long-only. Short-selling candidates are rejected before scheduler trade events are emitted.",
-            "",
-            "Core fields:",
-            f"- event_type: {_event_type(row)}",
-            f"- event_key: {event_key}",
-            f"- symbol: {symbol}",
-            f"- side/direction: {row.get('side', row.get('direction', ''))}",
-            f"- decision_slot: {slot}",
-            f"- closed_1h_candle_start: {row.get('closed_1h_candle_start', '')}",
-            f"- closed_1h_candle_end: {row.get('closed_1h_candle_end', '')}",
-            f"- source_1m_count: {row.get('source_1m_count', '')}",
-            f"- reason: {reason}",
-            "",
-            "PnL / equity:",
-            f"- amount_bought_eur: {_format_eur(row.get('amount_bought_eur', ''))}",
-            f"- position_notional_eur: {_format_eur(row.get('position_notional_eur', ''))}",
-            f"- active_equity_reference_eur: {_format_eur(row.get('active_equity_reference_eur', ''))}",
-            f"- total_equity_after_event_eur: {_format_eur(row.get('total_equity_after_event_eur', ''))}",
-            f"- net_pnl_eur: {_format_eur(row.get('net_pnl_eur', row.get('pnl_eur', '')), signed=True)}",
-            f"- risk_eur: {_format_eur(row.get('risk_eur', ''))}",
-            f"- estimated_cost_eur: {_format_eur(row.get('estimated_cost_eur', ''))}",
-            f"- net_r: {row.get('net_r', row.get('r_multiple', ''))}",
-            f"- net_cost_r: {row.get('net_cost_r', '')}",
-            "",
-            "Trade technicals:",
-            f"- entry_price: {row.get('entry_price', row.get('entry_reference', ''))}",
-            f"- exit_price: {row.get('exit_price', row.get('exit_reference', ''))}",
-            f"- initial_stop: {row.get('initial_stop', row.get('stop_reference', ''))}",
-            f"- target_reference: {row.get('target_reference', '')}",
-            f"- entry_reason: {row.get('entry_reason', row.get('reason', ''))}",
-            f"- exit_reason: {row.get('exit_reason', '')}",
-            f"- setup_class: {row.get('setup_class', '')}",
-            f"- pattern: {row.get('pattern', '')}",
-            f"- liquidity_event_type: {row.get('liquidity_event_type', '')}",
-            f"- ema_score: {row.get('ema_score', '')}",
-            f"- htf_confirmation_score: {row.get('htf_confirmation_score', '')}",
-            f"- pullback_type: {row.get('pullback_type', '')}",
-            f"- convexity_label: {row.get('convexity_label', '')}",
-            f"- personality_label: {row.get('personality_label', '')}",
-            f"- runner_label: {row.get('runner_label', '')}",
-            f"- entry_score: {row.get('entry_score', row.get('score', ''))}",
-            "",
-            "6H context overlay:",
-            f"- overlay_court: {row.get('six_h_context_overlay_court', ACTIVE_6H_CONTEXT_OVERLAY_COURT)}",
-            f"- overlay_classification: {row.get('six_h_context_overlay_classification', ACTIVE_6H_CONTEXT_OVERLAY_CLASSIFICATION)}",
-            f"- variant: {row.get('six_h_context_variant', ACTIVE_6H_CONTEXT_VARIANT)}",
-            f"- context_candle_close: {row.get('six_h_context_candle_close_timestamp', '')}",
-            f"- trend_state: {row.get('six_h_trend_state', '')}",
-            f"- structure_state: {row.get('six_h_structure_state', '')}",
-            f"- alignment: {row.get('six_h_alignment', '')}",
-            f"- conflict: {row.get('six_h_conflict', '')}",
-            f"- room_to_target_r: {row.get('six_h_room_to_target_r', '')}",
-            f"- clean_confluence: {row.get('six_h_clean_confluence', '')}",
-            f"- scale_multiplier: {row.get('six_h_context_scale_multiplier', '')}",
-            f"- original_net_r_before_6h_context: {row.get('original_net_r_before_6h_context', '')}",
-            f"- net_r_after_6h_context: {row.get('net_r_after_6h_context', row.get('net_r', ''))}",
-            "- native_6h_execution_enabled: false",
-            "- entries_changed: false",
-            "- exits_changed: false",
-            "- thresholds_tuned: false",
-            "",
-            "Allocator:",
-            f"- allocator_spec: {row.get('allocator_spec_id', EARNED_PARALLEL_SLOT_SPEC_ID)}",
-            f"- allocator_action: {row.get('allocator_slot_action', '')}",
-            f"- max_slots_at_entry: {row.get('max_slots_at_entry', row.get('allocator_max_slots_active', ''))}",
-            f"- concurrent_slots_at_entry: {row.get('concurrent_slots_at_entry', '')}",
-            f"- closed_equity_at_entry: {_format_eur(row.get('closed_equity_at_entry', ''))}",
-            f"- symbol_cap_eur: {_format_eur(row.get('symbol_cap_eur', ''))}",
-            "",
-            "Decision fields:",
-            f"- strategy_signal_evaluated: {row.get('strategy_signal_evaluated', '')}",
-            f"- scanner_selection_evaluated: {row.get('scanner_selection_evaluated', '')}",
-            f"- paper_trade_created: {row.get('paper_trade_created', '')}",
-            f"- live_trade_created: {row.get('live_trade_created', '')}",
-            f"- order_created: {row.get('order_created', '')}",
-            f"- broker_path_used: {row.get('broker_path_used', '')}",
-            f"- direction: {row.get('direction', '')}",
-            f"- entry_reference: {row.get('entry_reference', '')}",
-            f"- stop_reference: {row.get('stop_reference', '')}",
-            f"- target_reference: {row.get('target_reference', '')}",
-            f"- setup_class: {row.get('setup_class', '')}",
-            f"- entry_reason: {row.get('entry_reason', row.get('reason', ''))}",
-            f"- exit_reason: {row.get('exit_reason', '')}",
-            f"- entry_score: {row.get('entry_score', row.get('score', ''))}",
-            f"- risk_multiplier: {row.get('risk_multiplier', '')}",
-            f"- convexity_label: {row.get('convexity_label', '')}",
-            f"- personality_label: {row.get('personality_label', '')}",
-            f"- pullback_type: {row.get('pullback_type', '')}",
-            f"- compounding_readiness_score: {row.get('compounding_readiness_score', '')}",
-            f"- runner_label: {row.get('runner_label', '')}",
-            "",
-            "Entry/exit alert policy:",
-            "- This email is emitted for actionable scheduler trigger rows only.",
-            "- Entry and exit event emails are idempotent and ledgered by event_key.",
-            "- No order/broker/live path is created by this scheduler.",
-            "",
-            "Safety:",
-            "- source: multi-asset research scheduler",
-            "- paper_validation_ready: false",
-            "- live_allowed: false",
-            "- real_money_allowed: false",
-            "- order_path_created: false",
-            "- broker_path_created: false",
-            "- no private/account/signed/order endpoint is used by this scheduler",
+            "Safety",
+            "------",
+            "paper_validation_ready: false",
+            "live_allowed: false",
+            "real_money_allowed: false",
+            "order_path_created: false",
+            "broker_path_created: false",
+            "private/account/signed/order endpoint used by this scheduler: false",
             "",
             f"Artifact root: {output_root}",
         ]
+    )
+    body = "\n".join(
+        plain_lines
     )
     event_dir.mkdir(parents=True, exist_ok=True)
     event_text = f"To: {alert['recipient']}\nSubject: {subject}\n\n{body}\n"
     event_path.write_text(event_text, encoding="utf-8")
     latest_path.write_text(event_text, encoding="utf-8")
+    event_html_path.write_text(html_body, encoding="utf-8")
+    latest_html_path.write_text(html_body, encoding="utf-8")
     sent = False
     note = "draft_written"
     smtp_allowed, smtp_gate_note = smtp_allowed_for_output_root(output_root)
@@ -1381,6 +1475,7 @@ def _write_trade_trigger_email(output_root: Path, row: dict[str, Any]) -> dict[s
         msg["To"] = alert["recipient"]
         msg["Subject"] = subject
         msg.set_content(body)
+        msg.add_alternative(html_body, subtype="html")
         try:
             with smtplib.SMTP(alert["host"], alert["port"], timeout=20) as smtp:
                 smtp.starttls()
@@ -1401,7 +1496,9 @@ def _write_trade_trigger_email(output_root: Path, row: dict[str, Any]) -> dict[s
         "email_sent": sent,
         "email_draft_written": True,
         "email_path": str(event_path),
+        "email_html_path": str(event_html_path),
         "latest_email_path": str(latest_path),
+        "latest_email_html_path": str(latest_html_path),
         "email_note": note,
         "paper_validation_ready": False,
         "live_allowed": False,

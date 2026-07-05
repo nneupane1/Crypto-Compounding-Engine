@@ -20,6 +20,7 @@ local production extraction workspace, copied to the cloud runtime root
 - `production_api/` lightweight read-only FastAPI telemetry API.
 - `dashboard/` source files only, with no `.next` cache and no `node_modules`.
 - `deploy/` Dockerfiles and Docker Compose production scaffold.
+- `docs/` production runbooks and repository structure audit.
 - `config/settings.json`, because the public Binance fetch helper depends on
   the root runtime config.
 - lightweight runtime seeds under

@@ -5,6 +5,7 @@ import csv
 import json
 import os
 import smtplib
+from html import escape
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -162,6 +163,7 @@ def _paths(root: Path) -> dict[str, Path]:
         "fill_ledger": root / "ledger" / "live_canary_fills.csv",
         "roundtrip_ledger": root / "ledger" / "live_canary_roundtrips.csv",
         "latest_email": root / "alerts" / "latest_live_canary_email.txt",
+        "latest_email_html": root / "alerts" / "latest_live_canary_email.html",
         "email_ledger": root / "alerts" / "live_canary_email_ledger.csv",
     }
 
@@ -288,12 +290,79 @@ def _roundtrip_fieldnames() -> list[str]:
         "exit_quote_filled",
         "quote_delta",
         "base_delta",
+        "quote_balance_before_exit",
+        "quote_balance_after_exit",
+        "base_balance_after_exit",
         "exit_reason",
         "result_label",
     ]
 
 
-def _email(root: Path, *, subject: str, body_lines: list[str]) -> dict[str, Any]:
+def _fmt_decimal(value: Any, suffix: str = "") -> str:
+    try:
+        dec = Decimal(str(value))
+    except Exception:
+        text = str(value or "")
+        return f"{text}{suffix}" if text else ""
+    formatted = f"{dec:,.8f}".rstrip("0").rstrip(".")
+    return f"{formatted}{suffix}"
+
+
+def _fmt_signed_quote(value: Any, asset: str = "USDC") -> str:
+    try:
+        dec = Decimal(str(value))
+    except Exception:
+        return f"{value} {asset}".strip()
+    sign = "+" if dec > 0 else ""
+    return f"{sign}{_fmt_decimal(dec)} {asset}"
+
+
+def _html_document(*, title: str, hero: str, hero_kind: str, sections: list[tuple[str, list[tuple[str, Any]]]], footer: str) -> str:
+    color = "#11b981" if hero_kind == "profit" else "#f59e0b" if hero_kind == "entry" else "#ef4444"
+    rows: list[str] = []
+    for heading, items in sections:
+        rows.append(f"<h2>{escape(heading)}</h2>")
+        rows.append("<table>")
+        for key, value in items:
+            rows.append(
+                "<tr>"
+                f"<th>{escape(str(key))}</th>"
+                f"<td>{escape(str(value))}</td>"
+                "</tr>"
+            )
+        rows.append("</table>")
+    return f"""<!doctype html>
+<html>
+  <body style="margin:0;background:#07111f;color:#e5eef9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
+    <div style="max-width:760px;margin:0 auto;padding:28px;">
+      <div style="border:1px solid rgba(148,163,184,.35);border-radius:22px;background:linear-gradient(135deg,#07111f,#0b2532 55%,#121827);box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden;">
+        <div style="padding:26px 30px;border-bottom:1px solid rgba(148,163,184,.25);">
+          <div style="letter-spacing:.16em;text-transform:uppercase;color:#93c5fd;font-size:12px;font-weight:800;">RTS Live Canary</div>
+          <h1 style="font-size:30px;line-height:1.15;margin:10px 0 0;color:#ffffff;">{escape(title)}</h1>
+        </div>
+        <div style="padding:28px 30px;">
+          <div style="border-radius:18px;border:1px solid {color};background:rgba(255,255,255,.06);padding:22px;margin-bottom:24px;">
+            <div style="font-size:14px;letter-spacing:.12em;text-transform:uppercase;color:{color};font-weight:900;">Main result</div>
+            <div style="font-size:34px;line-height:1.15;color:#ffffff;font-weight:900;margin-top:8px;">{escape(hero)}</div>
+          </div>
+          {''.join(rows)}
+          <p style="margin-top:24px;color:#a8b3c7;font-size:13px;line-height:1.6;">{escape(footer)}</p>
+        </div>
+      </div>
+    </div>
+    <style>
+      table {{ width:100%; border-collapse:collapse; margin:10px 0 22px; background:rgba(15,23,42,.72); border-radius:14px; overflow:hidden; }}
+      th,td {{ padding:12px 14px; border-bottom:1px solid rgba(148,163,184,.18); text-align:left; vertical-align:top; }}
+      th {{ width:42%; color:#93a4b8; font-size:12px; text-transform:uppercase; letter-spacing:.08em; }}
+      td {{ color:#f8fafc; font-size:15px; font-weight:700; }}
+      h2 {{ color:#e0f2fe; font-size:18px; margin:20px 0 8px; }}
+    </style>
+  </body>
+</html>
+"""
+
+
+def _email(root: Path, *, subject: str, body_lines: list[str], html_body: str | None = None) -> dict[str, Any]:
     paths = _paths(root)
     recipient = os.getenv("RTS_ALERT_EMAIL_TO", DEFAULT_ALERT_TO)
     enabled = _parse_bool(os.getenv("RTS_ALERT_EMAIL_ENABLED"))
@@ -305,6 +374,8 @@ def _email(root: Path, *, subject: str, body_lines: list[str]) -> dict[str, Any]
     body = "\n".join(body_lines + ["", f"Artifact root: {root}"])
     paths["latest_email"].parent.mkdir(parents=True, exist_ok=True)
     paths["latest_email"].write_text(f"To: {recipient}\nSubject: {subject}\n\n{body}\n", encoding="utf-8")
+    if html_body:
+        paths["latest_email_html"].write_text(html_body, encoding="utf-8")
     sent = False
     note = "draft_written"
     smtp_allowed, smtp_note = smtp_allowed_for_output_root(root)
@@ -316,6 +387,8 @@ def _email(root: Path, *, subject: str, body_lines: list[str]) -> dict[str, Any]
         msg["To"] = recipient
         msg["Subject"] = subject
         msg.set_content(body)
+        if html_body:
+            msg.add_alternative(html_body, subtype="html")
         try:
             with smtplib.SMTP(host, int(os.getenv("RTS_ALERT_SMTP_PORT", "587") or "587"), timeout=20) as smtp:
                 smtp.starttls()
@@ -334,6 +407,7 @@ def _email(root: Path, *, subject: str, body_lines: list[str]) -> dict[str, Any]
         "email_draft_written": True,
         "email_note": note,
         "email_path": str(paths["latest_email"]),
+        "email_html_path": str(paths["latest_email_html"]) if html_body else "",
     }
     _append_csv(
         paths["email_ledger"],
@@ -546,50 +620,178 @@ def _record_order(root: Path, *, event_type: str, source_trade_id: str, side: st
 
 
 def _entry_email(root: Path, position: dict[str, Any]) -> dict[str, Any]:
+    source_symbol = str(position["source_symbol"])
+    execution_symbol = str(position["symbol"])
+    quote_asset = str(position["quote_asset"])
+    base_asset = str(position["base_asset"])
+    quote_filled = _fmt_decimal(position["entry_quote_filled"], f" {quote_asset}")
+    total_equity = position.get("estimated_total_equity_quote_after_entry", position.get("quote_balance_after_entry", ""))
+    subject = (
+        f"RTS LIVE CANARY ENTRY: {source_symbol} SIGNAL -> "
+        f"{execution_symbol} BUY {quote_filled}"
+    )
+    html = _html_document(
+        title=f"Entry opened: {execution_symbol}",
+        hero=f"BUY filled: {quote_filled}",
+        hero_kind="entry",
+        sections=[
+            (
+                "Execution",
+                [
+                    ("Source signal", source_symbol),
+                    ("Execution pair", execution_symbol),
+                    ("Side", "BUY / spot long only"),
+                    ("Source trade id", position["source_trade_id"]),
+                    ("Entry order id", position["entry_exchange_order_id"]),
+                    ("Executed quantity", f"{_fmt_decimal(position['entry_executed_qty'])} {base_asset}"),
+                    ("Quote filled", quote_filled),
+                    ("Estimated total canary equity after entry", _fmt_decimal(total_equity, f" {quote_asset}")),
+                ],
+            ),
+            (
+                "Frozen signal references",
+                [
+                    ("Source timestamp", position.get("source_timestamp", "")),
+                    ("Source entry reference", position.get("entry_reference", "")),
+                    ("Stop reference", position.get("stop_reference", "")),
+                    ("Target reference", position.get("target_reference", "")),
+                ],
+            ),
+            (
+                "Safety",
+                [
+                    ("Max canary order", _fmt_decimal(position.get("max_order_notional_quote", ""), f" {quote_asset}")),
+                    ("Position rule", "one open canary position maximum"),
+                    ("Execution product", "Binance Spot only"),
+                    ("Disabled", "short-selling, margin, futures, withdrawals, full-capital live deployment"),
+                ],
+            ),
+        ],
+        footer="Entry email is sent immediately after the BUY fill. Exit email is sent only later, when a future scheduler run detects the frozen target/stop exit condition and the SELL fill completes.",
+    )
     return _email(
         root,
-        subject=(
-            f"RTS LIVE CANARY ENTRY: {position['source_symbol']} SIGNAL -> "
-            f"{position['symbol']} BUY {position['entry_quote_filled']} {position['quote_asset']}"
-        ),
+        subject=subject,
         body_lines=[
-            "Tiny real-money live-canary entry submitted from the frozen 9-symbol USDT-signal / USDC-execution route.",
-            "This is NOT full strategy live deployment.",
+            "RTS LIVE CANARY ENTRY",
+            "=====================",
             "",
-            f"Source signal symbol: {position['source_symbol']}",
-            f"Symbol: {position['symbol']}",
+            f"BUY FILLED: {quote_filled}",
+            f"Estimated total canary equity after entry: {_fmt_decimal(total_equity, f' {quote_asset}')}",
+            "",
+            "Execution",
+            "---------",
+            f"Source signal symbol: {source_symbol}",
+            f"Execution symbol: {execution_symbol}",
             f"Source trade id: {position['source_trade_id']}",
+            f"Source timestamp: {position.get('source_timestamp', '')}",
             f"Entry order id: {position['entry_exchange_order_id']}",
-            f"Executed quantity: {position['entry_executed_qty']} {position['base_asset']}",
-            f"Quote filled: {position['entry_quote_filled']} {position['quote_asset']}",
+            f"Executed quantity: {_fmt_decimal(position['entry_executed_qty'])} {base_asset}",
+            f"Quote filled: {quote_filled}",
+            "",
+            "Frozen signal references",
+            "------------------------",
+            f"Entry reference: {position.get('entry_reference', '')}",
             f"Stop reference: {position.get('stop_reference', '')}",
             f"Target reference: {position.get('target_reference', '')}",
             "",
-            "Safety: max one open canary position, tiny notional cap, spot only, long only, no margin, no futures, no withdrawals.",
+            "Safety",
+            "------",
+            "This is tiny real-money canary execution only.",
+            "Entry email is immediate after BUY fill.",
+            "Exit email is sent only after a later SELL fill.",
+            "Spot only, long only, no margin, no futures, no withdrawals, no full-capital live deployment.",
         ],
+        html_body=html,
     )
 
 
 def _exit_email(root: Path, roundtrip: dict[str, Any]) -> dict[str, Any]:
-    label = "CONGRATULATIONS PROFIT" if _parse_decimal(str(roundtrip.get("quote_delta")), "0") > 0 else "LOSS CONTROL"
+    quote_delta = _parse_decimal(str(roundtrip.get("quote_delta")), "0")
+    symbol = str(roundtrip["symbol"])
+    quote_asset = str(roundtrip.get("quote_asset") or symbol[-4:] or "USDC")
+    if quote_delta > 0:
+        label = "CONGRATULATIONS PROFIT"
+        hero = f"CONGRATULATIONS — PROFIT {_fmt_signed_quote(quote_delta, quote_asset)}"
+        hero_kind = "profit"
+    elif quote_delta < 0:
+        label = "OOPS LOSS CONTROL"
+        hero = f"OOPS — LOSS {_fmt_signed_quote(quote_delta, quote_asset)}"
+        hero_kind = "loss"
+    else:
+        label = "FLAT EXIT"
+        hero = f"FLAT EXIT {_fmt_signed_quote(quote_delta, quote_asset)}"
+        hero_kind = "entry"
+    total_equity = roundtrip.get("estimated_total_equity_quote_after_exit", roundtrip.get("quote_balance_after_exit", ""))
+    subject = f"RTS LIVE CANARY EXIT {label}: {symbol} PnL { _fmt_signed_quote(quote_delta, quote_asset) } | Equity {_fmt_decimal(total_equity, f' {quote_asset}')}"
+    html = _html_document(
+        title=f"Exit closed: {symbol}",
+        hero=f"{hero} | Total equity {_fmt_decimal(total_equity, f' {quote_asset}')}",
+        hero_kind=hero_kind,
+        sections=[
+            (
+                "PnL",
+                [
+                    ("Net canary PnL / quote delta", _fmt_signed_quote(quote_delta, quote_asset)),
+                    ("Total canary equity after exit", _fmt_decimal(total_equity, f" {quote_asset}")),
+                    ("Result", str(roundtrip.get("result_label", ""))),
+                    ("Exit reason", str(roundtrip.get("exit_reason", ""))),
+                ],
+            ),
+            (
+                "Execution",
+                [
+                    ("Symbol", symbol),
+                    ("Source trade id", roundtrip["source_trade_id"]),
+                    ("Entry order id", roundtrip["entry_client_order_id"]),
+                    ("Exit order id", roundtrip["exit_client_order_id"]),
+                    ("Entry quote filled", _fmt_decimal(roundtrip["entry_quote_filled"], f" {quote_asset}")),
+                    ("Exit quote filled", _fmt_decimal(roundtrip["exit_quote_filled"], f" {quote_asset}")),
+                    ("Base delta after close", _fmt_decimal(roundtrip.get("base_delta", ""))),
+                ],
+            ),
+            (
+                "Safety",
+                [
+                    ("Execution product", "Binance Spot only"),
+                    ("Disabled", "short-selling, margin, futures, withdrawals, full-capital live deployment"),
+                ],
+            ),
+        ],
+        footer="Exit email is sent only after the SELL fill is completed and the roundtrip ledger is written.",
+    )
     return _email(
         root,
-        subject=f"RTS LIVE CANARY EXIT {label}: {roundtrip['symbol']} quote_delta {roundtrip['quote_delta']}",
+        subject=subject,
         body_lines=[
-            "Tiny real-money live-canary exit completed.",
-            "This is NOT full strategy live deployment.",
+            f"RTS LIVE CANARY EXIT — {label}",
+            "===================================",
             "",
-            f"Symbol: {roundtrip['symbol']}",
+            hero,
+            f"Total canary equity after exit: {_fmt_decimal(total_equity, f' {quote_asset}')}",
+            "",
+            "PnL",
+            "---",
+            f"Net canary PnL / quote delta: {_fmt_signed_quote(quote_delta, quote_asset)}",
+            f"Result: {roundtrip.get('result_label', '')}",
+            f"Exit reason: {roundtrip['exit_reason']}",
+            "",
+            "Execution",
+            "---------",
+            f"Symbol: {symbol}",
             f"Source trade id: {roundtrip['source_trade_id']}",
             f"Entry order id: {roundtrip['entry_client_order_id']}",
             f"Exit order id: {roundtrip['exit_client_order_id']}",
-            f"Entry quote filled: {roundtrip['entry_quote_filled']}",
-            f"Exit quote filled: {roundtrip['exit_quote_filled']}",
-            f"PnL / quote delta: {roundtrip['quote_delta']}",
-            f"Exit reason: {roundtrip['exit_reason']}",
+            f"Entry quote filled: {_fmt_decimal(roundtrip['entry_quote_filled'], f' {quote_asset}')}",
+            f"Exit quote filled: {_fmt_decimal(roundtrip['exit_quote_filled'], f' {quote_asset}')}",
+            f"Base delta after close: {_fmt_decimal(roundtrip.get('base_delta', ''))}",
             "",
-            "Safety: spot only, long only, no margin, no futures, no withdrawals.",
+            "Safety",
+            "------",
+            "This is tiny real-money canary execution only.",
+            "Spot only, long only, no margin, no futures, no withdrawals, no full-capital live deployment.",
         ],
+        html_body=html,
     )
 
 
@@ -657,18 +859,24 @@ def _maybe_exit_open_position(root: Path, client: BinanceLiveSpotClient, manifes
     after = client.account()
     quote_after = _asset_balance(after, rules.quote_asset)
     base_after = _asset_balance(after, rules.base_asset)
+    quote_delta = quote_after - quote_before - _parse_decimal(str(position.get("entry_quote_spent_delta", "0")), "0")
     roundtrip = {
         "created_at": _now(),
         "source_trade_id": position["source_trade_id"],
         "symbol": symbol,
+        "quote_asset": rules.quote_asset,
         "entry_client_order_id": position["entry_client_order_id"],
         "exit_client_order_id": client_order_id,
         "entry_quote_filled": position["entry_quote_filled"],
         "exit_quote_filled": str(response.get("cummulativeQuoteQty", "0")),
-        "quote_delta": quote_after - quote_before - _parse_decimal(str(position.get("entry_quote_spent_delta", "0")), "0"),
+        "quote_delta": quote_delta,
         "base_delta": base_after - _parse_decimal(str(position.get("base_balance_before_entry", "0")), "0"),
+        "quote_balance_before_exit": quote_before,
+        "quote_balance_after_exit": quote_after,
+        "base_balance_after_exit": base_after,
+        "estimated_total_equity_quote_after_exit": quote_after + (base_after * price),
         "exit_reason": exit_reason,
-        "result_label": "PROFIT" if quote_after > quote_before else "LOSS_OR_FLAT",
+        "result_label": "PROFIT" if quote_delta > 0 else "LOSS" if quote_delta < 0 else "FLAT",
     }
     _append_csv(_paths(root)["roundtrip_ledger"], roundtrip, _roundtrip_fieldnames())
     position["open"] = False
@@ -761,6 +969,7 @@ def _submit_entry(root: Path, client: BinanceLiveSpotClient, manifest: dict[str,
         "entry_status": str(response.get("status", "")),
         "entry_executed_qty": str(response.get("executedQty", "0")),
         "entry_quote_filled": str(response.get("cummulativeQuoteQty", "0")),
+        "entry_execution_reference_price": price,
         "entry_reference": candidate.get("entry_reference", ""),
         "stop_reference": candidate.get("stop_reference", ""),
         "target_reference": candidate.get("target_reference", ""),
@@ -769,6 +978,7 @@ def _submit_entry(root: Path, client: BinanceLiveSpotClient, manifest: dict[str,
         "quote_balance_before_entry": quote_before,
         "quote_balance_after_entry": _asset_balance(after, rules.quote_asset),
         "entry_quote_spent_delta": quote_before - _asset_balance(after, rules.quote_asset),
+        "estimated_total_equity_quote_after_entry": _asset_balance(after, rules.quote_asset) + (_asset_balance(after, rules.base_asset) * price),
         "max_order_notional_quote": max_order,
     }
     _write_json(_paths(root)["open_position"], position)
