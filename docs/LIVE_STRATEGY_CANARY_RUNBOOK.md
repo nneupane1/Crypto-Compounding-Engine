@@ -13,7 +13,7 @@ The live canary proves this specific production path:
 2. the frozen long-only nine-symbol scanner writes a fresh signal into the
    decision ledger;
 3. the live canary reads only that fresh signal;
-4. it submits at most one capped micro-live Spot buy;
+4. it submits at most one capped micro-live Spot buy per scheduler tick, with up to two open canary positions total;
 5. it later submits the matching capped micro-live Spot sell when the frozen exit
    reference is reached;
 6. it writes order/fill/roundtrip artifacts;
@@ -31,10 +31,11 @@ It does not enable full strategy live trading.
 - No futures.
 - No withdrawals.
 - No transfers.
-- Maximum one open canary position.
+- Maximum two open canary positions.
 - Default account cap: `€150`.
 - Default test budget: `€100`.
-- Default single-order notional cap: `€95`.
+- Default single-order notional cap: `€47.50`.
+- Default total test budget: `€100`.
 - Default daily loss cap: `€25`.
 - Dedicated Binance keys only: `BINANCE_LIVE_SMOKE_API_KEY` and
   `BINANCE_LIVE_SMOKE_API_SECRET`.
@@ -88,7 +89,7 @@ docker compose -f deploy/docker-compose.prod.yml --profile live-canary run --rm 
 ```
 
 If there is no fresh eligible frozen signal, the command exits with no order.
-If a fresh signal exists, it may place one capped micro-live Spot buy.
+If a fresh signal exists, it may place one capped micro-live Spot buy, up to the two-position cap.
 If an open canary position exists, it checks the frozen target/stop reference
 and may place the matching capped micro-live Spot sell.
 

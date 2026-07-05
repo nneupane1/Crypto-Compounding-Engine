@@ -55,8 +55,8 @@ Current production rehearsal layout:
 - `rts-live-canary-usdc.timer` stays running on Hetzner and checks every five
   minutes for fresh local signals.
 - The live canary maps USDT signal symbols to USDC Spot execution symbols and
-  uses micro-live hard caps: `95 USDC` max order, one open position, `25 USDC` daily
-  closed-loss cap.
+  uses micro-live hard caps: `47.50 USDC` max order, two open positions, `100 USDC`
+  total test budget, `25 USDC` daily closed-loss cap.
 - Full live trading remains disabled.
 
 Install the timer after deployment:

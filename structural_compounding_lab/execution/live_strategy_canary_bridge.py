@@ -64,7 +64,7 @@ MAX_HARD_ACCOUNT_CAPITAL_EUR = Decimal("1000")
 MAX_HARD_TEST_BUDGET_EUR = Decimal("100")
 MAX_HARD_ORDER_NOTIONAL_EUR = Decimal("100")
 MAX_HARD_DAILY_LOSS_EUR = Decimal("25")
-MAX_OPEN_POSITIONS = 1
+MAX_OPEN_POSITIONS = 2
 
 FORBIDDEN_ENV_NAMES = {
     "BINANCE_API_KEY",
@@ -165,6 +165,7 @@ def _paths(root: Path) -> dict[str, Path]:
         "safety_manifest": root / "safety_manifest.json",
         "activation": root / "state" / "activation_state.json",
         "open_position": root / "state" / "open_position.json",
+        "open_positions_dir": root / "state" / "open_positions",
         "candidate_ledger": root / "ledger" / "live_canary_signal_candidates.csv",
         "order_ledger": root / "ledger" / "live_canary_orders.csv",
         "fill_ledger": root / "ledger" / "live_canary_fills.csv",
@@ -173,6 +174,48 @@ def _paths(root: Path) -> dict[str, Path]:
         "latest_email_html": root / "alerts" / "latest_live_canary_email.html",
         "email_ledger": root / "alerts" / "live_canary_email_ledger.csv",
     }
+
+
+def _safe_state_name(value: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(value))
+    return safe.strip("_") or "unknown"
+
+
+def _position_path(root: Path, source_trade_id: str) -> Path:
+    return _paths(root)["open_positions_dir"] / f"{_safe_state_name(source_trade_id)}.json"
+
+
+def _open_positions(root: Path) -> list[tuple[Path, dict[str, Any]]]:
+    paths = _paths(root)
+    positions: list[tuple[Path, dict[str, Any]]] = []
+    directory = paths["open_positions_dir"]
+    if directory.exists():
+        for path in sorted(directory.glob("*.json")):
+            position = _read_json(path, {})
+            if position.get("open"):
+                positions.append((path, position))
+    legacy = _read_json(paths["open_position"], {})
+    if legacy.get("open"):
+        legacy_trade_id = str(legacy.get("source_trade_id", ""))
+        if legacy_trade_id and not any(str(item.get("source_trade_id", "")) == legacy_trade_id for _, item in positions):
+            migrated_path = _position_path(root, legacy_trade_id)
+            migrated_path.parent.mkdir(parents=True, exist_ok=True)
+            if not migrated_path.exists():
+                _write_json(migrated_path, legacy)
+            positions.append((migrated_path, legacy))
+    positions.sort(key=lambda item: _parse_timestamp(str(item[1].get("created_at", ""))) or datetime.min.replace(tzinfo=timezone.utc))
+    return positions
+
+
+def _open_position_symbols(root: Path) -> set[str]:
+    return {str(position.get("symbol", "")).upper() for _, position in _open_positions(root) if position.get("symbol")}
+
+
+def _open_position_exposure_quote(root: Path) -> Decimal:
+    exposure = Decimal("0")
+    for _, position in _open_positions(root):
+        exposure += _parse_decimal(str(position.get("entry_quote_filled") or position.get("entry_quote_spent_delta")), "0")
+    return exposure
 
 
 def _source_timestamp(row: dict[str, str]) -> datetime | None:
@@ -501,7 +544,7 @@ def _limits() -> dict[str, Any]:
             and Decimal("0") < max_budget <= MAX_HARD_TEST_BUDGET_EUR
             and Decimal("0") < max_order <= MAX_HARD_ORDER_NOTIONAL_EUR
             and Decimal("0") < max_daily_loss <= MAX_HARD_DAILY_LOSS_EUR
-            and max_open == MAX_OPEN_POSITIONS
+            and 1 <= max_open <= MAX_OPEN_POSITIONS
         ),
     }
 
@@ -559,8 +602,8 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
         raise BinanceLiveSpotSafetyError("forbidden generic/demo key variables present")
     if not manifest["caps_ok"]:
         raise BinanceLiveSpotSafetyError("live canary caps exceed hard-coded safety limits")
-    if manifest["max_open_positions"] != 1:
-        raise BinanceLiveSpotSafetyError("live canary allows exactly one open position")
+    if not (1 <= int(manifest["max_open_positions"]) <= MAX_OPEN_POSITIONS):
+        raise BinanceLiveSpotSafetyError("live canary max_open_positions must be 1 or 2")
 
 
 def _asset_balance(account: dict[str, Any], asset: str) -> Decimal:
@@ -701,7 +744,7 @@ def _entry_email(root: Path, position: dict[str, Any]) -> dict[str, Any]:
     patience_attempts = position.get("execution_patience_attempts", "")
     patience_delay = position.get("execution_patience_delay_seconds", "")
     conviction_tier = str(position.get("conviction_tier") or "normal")
-    research_sizing_profile = str(position.get("research_sizing_profile") or "A+/Elite research sizing candidate; live canary remains tiny-capped")
+    research_sizing_profile = str(position.get("research_sizing_profile") or "A+/Elite research sizing candidate; live canary remains micro-capped")
     subject = (
         f"RTS LIVE CANARY ENTRY [{conviction_tier.upper()}]: {source_symbol} -> "
         f"{execution_symbol} BUY {quote_filled} | Equity {_fmt_decimal(total_equity, f' {quote_asset}')}"
@@ -731,7 +774,7 @@ def _entry_email(root: Path, position: dict[str, Any]) -> dict[str, Any]:
                     ("Setup class", position.get("setup_class", "")),
                     ("Convexity label", position.get("convexity_label", "")),
                     ("Research sizing profile", research_sizing_profile),
-                    ("Live canary sizing", "tiny fixed cap; research sizing is not full-live enabled"),
+                    ("Live canary sizing", "micro-live two-slot cap; research sizing is not full-live enabled"),
                 ],
             ),
             (
@@ -758,7 +801,7 @@ def _entry_email(root: Path, position: dict[str, Any]) -> dict[str, Any]:
                 "Safety",
                 [
                     ("Max canary order", _fmt_decimal(position.get("max_order_notional_quote", ""), f" {quote_asset}")),
-                    ("Position rule", "one open canary position maximum"),
+                    ("Position rule", f"up to {position.get('max_open_positions', 1)} open canary positions; total exposure capped by test budget"),
                     ("Execution product", "Binance Spot only"),
                     ("Disabled", "short-selling, margin, futures, withdrawals, full-capital live deployment"),
                 ],
@@ -792,7 +835,7 @@ def _entry_email(root: Path, position: dict[str, Any]) -> dict[str, Any]:
             f"Setup class: {position.get('setup_class', '')}",
             f"Convexity label: {position.get('convexity_label', '')}",
             f"Research sizing profile: {research_sizing_profile}",
-            "Live canary sizing: tiny fixed cap; research sizing is not full-live enabled",
+            "Live canary sizing: micro-live two-slot cap; research sizing is not full-live enabled",
             "",
             "USDC execution patience guard",
             "-----------------------------",
@@ -811,7 +854,7 @@ def _entry_email(root: Path, position: dict[str, Any]) -> dict[str, Any]:
             "",
             "Safety",
             "------",
-            "This is tiny real-money canary execution only.",
+            "This is micro real-money canary execution only.",
             "Entry email is immediate after BUY fill.",
             "Exit email is sent only after a later SELL fill.",
             "Spot only, long only, no margin, no futures, no withdrawals, no full-capital live deployment.",
@@ -838,7 +881,7 @@ def _exit_email(root: Path, roundtrip: dict[str, Any]) -> dict[str, Any]:
         hero_kind = "entry"
     total_equity = roundtrip.get("estimated_total_equity_quote_after_exit", roundtrip.get("quote_balance_after_exit", ""))
     conviction_tier = str(roundtrip.get("conviction_tier") or "normal")
-    research_sizing_profile = str(roundtrip.get("research_sizing_profile") or "A+/Elite research sizing candidate; live canary remains tiny-capped")
+    research_sizing_profile = str(roundtrip.get("research_sizing_profile") or "A+/Elite research sizing candidate; live canary remains micro-capped")
     subject = f"RTS LIVE CANARY EXIT {label} [{conviction_tier.upper()}]: {symbol} PnL { _fmt_signed_quote(quote_delta, quote_asset) } | Equity {_fmt_decimal(total_equity, f' {quote_asset}')}"
     html = _html_document(
         title=f"Exit closed: {symbol}",
@@ -873,7 +916,7 @@ def _exit_email(root: Path, roundtrip: dict[str, Any]) -> dict[str, Any]:
                     ("Setup class", str(roundtrip.get("setup_class", ""))),
                     ("Convexity label", str(roundtrip.get("convexity_label", ""))),
                     ("Research sizing profile", research_sizing_profile),
-                    ("Live canary sizing", "tiny fixed cap; research sizing is not full-live enabled"),
+                    ("Live canary sizing", "micro-live two-slot cap; research sizing is not full-live enabled"),
                 ],
             ),
             (
@@ -927,7 +970,7 @@ def _exit_email(root: Path, roundtrip: dict[str, Any]) -> dict[str, Any]:
             f"Setup class: {roundtrip.get('setup_class', '')}",
             f"Convexity label: {roundtrip.get('convexity_label', '')}",
             f"Research sizing profile: {research_sizing_profile}",
-            "Live canary sizing: tiny fixed cap; research sizing is not full-live enabled",
+            "Live canary sizing: micro-live two-slot cap; research sizing is not full-live enabled",
             "",
             "USDC execution patience guard",
             "-----------------------------",
@@ -938,129 +981,139 @@ def _exit_email(root: Path, roundtrip: dict[str, Any]) -> dict[str, Any]:
             "",
             "Safety",
             "------",
-            "This is tiny real-money canary execution only.",
+            "This is micro real-money canary execution only.",
             "Spot only, long only, no margin, no futures, no withdrawals, no full-capital live deployment.",
         ],
         html_body=html,
     )
 
 
-def _maybe_exit_open_position(root: Path, client: BinanceLiveSpotClient, manifest: dict[str, Any]) -> dict[str, Any] | None:
-    position_path = _paths(root)["open_position"]
-    position = _read_json(position_path, {})
-    if not position.get("open"):
-        return None
-    symbol = str(position["symbol"]).upper()
-    exchange_info = client.exchange_info(symbol)
-    rules = parse_symbol_rules(exchange_info, symbol)
-    price = client.ticker_price(symbol)
-    target = _parse_decimal(str(position.get("target_reference", "")), "0")
-    stop = _parse_decimal(str(position.get("stop_reference", "")), "0")
-    exit_reason = ""
-    if target > 0 and price >= target:
-        exit_reason = "target_reference_reached"
-    elif stop > 0 and price <= stop:
-        exit_reason = "stop_reference_reached"
-    if not exit_reason:
+def _maybe_exit_open_positions(root: Path, client: BinanceLiveSpotClient, manifest: dict[str, Any]) -> dict[str, Any] | None:
+    monitored: list[dict[str, Any]] = []
+    for position_path, position in _open_positions(root):
+        symbol = str(position["symbol"]).upper()
+        exchange_info = client.exchange_info(symbol)
+        rules = parse_symbol_rules(exchange_info, symbol)
+        price = client.ticker_price(symbol)
+        target = _parse_decimal(str(position.get("target_reference", "")), "0")
+        stop = _parse_decimal(str(position.get("stop_reference", "")), "0")
+        exit_reason = ""
+        if target > 0 and price >= target:
+            exit_reason = "target_reference_reached"
+        elif stop > 0 and price <= stop:
+            exit_reason = "stop_reference_reached"
+        if not exit_reason:
+            monitored.append(
+                {
+                    "source_trade_id": position.get("source_trade_id", ""),
+                    "symbol": symbol,
+                    "current_price": price,
+                    "target_reference": target,
+                    "stop_reference": stop,
+                }
+            )
+            continue
+        before = client.account()
+        base_before = _asset_balance(before, rules.base_asset)
+        quote_before = _asset_balance(before, rules.quote_asset)
+        base_at_entry = _parse_decimal(str(position.get("base_balance_before_entry", "0")), "0")
+        sell_qty = floor_to_step(max(Decimal("0"), base_before - base_at_entry), rules.step_size)
+        if sell_qty * price < rules.min_notional:
+            raise BinanceLiveSpotSafetyError("open canary position is below Binance minimum sell notional")
+        seed = f"{COURT_NAME}|EXIT|{position['source_trade_id']}|{_now()}"
+        client_order_id = build_client_order_id("rtscanx", seed)
+        intent = DemoOrderIntent(
+            signal_id=seed,
+            symbol=symbol,
+            side="SELL",
+            order_type="MARKET",
+            quantity=sell_qty,
+            reason=f"live_strategy_canary_exit_{exit_reason}",
+        )
+        response = client.create_order(intent, client_order_id)
+        _record_order(
+            root,
+            event_type="EXIT",
+            source_trade_id=str(position["source_trade_id"]),
+            side="SELL",
+            symbol=symbol,
+            client_order_id=client_order_id,
+            response=response,
+            price=price,
+            max_order=_parse_decimal(str(manifest["max_order_notional_eur"]), "10"),
+            reason=f"live_strategy_canary_exit_{exit_reason}",
+            real_money_allowed=True,
+        )
+        after = client.account()
+        quote_after = _asset_balance(after, rules.quote_asset)
+        base_after = _asset_balance(after, rules.base_asset)
+        quote_delta = quote_after - quote_before - _parse_decimal(str(position.get("entry_quote_spent_delta", "0")), "0")
+        roundtrip = {
+            "created_at": _now(),
+            "source_trade_id": position["source_trade_id"],
+            "symbol": symbol,
+            "quote_asset": rules.quote_asset,
+            "entry_client_order_id": position["entry_client_order_id"],
+            "exit_client_order_id": client_order_id,
+            "entry_quote_filled": position["entry_quote_filled"],
+            "exit_quote_filled": str(response.get("cummulativeQuoteQty", "0")),
+            "quote_delta": quote_delta,
+            "base_delta": base_after - _parse_decimal(str(position.get("base_balance_before_entry", "0")), "0"),
+            "quote_balance_before_exit": quote_before,
+            "quote_balance_after_exit": quote_after,
+            "base_balance_after_exit": base_after,
+            "estimated_total_equity_quote_after_exit": quote_after + (base_after * price),
+            "exit_reason": exit_reason,
+            "result_label": "PROFIT" if quote_delta > 0 else "LOSS" if quote_delta < 0 else "FLAT",
+            "setup_class": position.get("setup_class", ""),
+            "convexity_label": position.get("convexity_label", ""),
+            "conviction_tier": position.get("conviction_tier", "normal"),
+            "research_sizing_profile": position.get("research_sizing_profile", ""),
+            "execution_guard_classification": position.get("execution_guard_classification", ""),
+            "execution_patience_attempts": position.get("execution_patience_attempts", ""),
+            "execution_patience_delay_seconds": position.get("execution_patience_delay_seconds", ""),
+        }
+        _append_csv(_paths(root)["roundtrip_ledger"], roundtrip, _roundtrip_fieldnames())
+        position["open"] = False
+        position["closed_at"] = _now()
+        position["exit_client_order_id"] = client_order_id
+        position["exit_exchange_order_id"] = str(response.get("orderId", ""))
+        position["exit_reason"] = exit_reason
+        _write_json(position_path, position)
+        _write_json(_paths(root)["open_position"], position)
+        email = _exit_email(root, roundtrip)
         return {
             **manifest,
-            "final_classification": POSITION_MONITORING,
-            "reason": "open_position_no_exit_condition",
-            "symbol": symbol,
-            "current_price": price,
-            "target_reference": target,
-            "stop_reference": stop,
-            "orders_submitted": 0,
-            "open_position": position,
-            "real_money_allowed": False,
-            "live_canary_order_path_allowed": False,
+            "final_classification": ROUNDTRIP_COMPLETED,
+            "reason": "open_canary_position_exit_submitted",
+            "orders_submitted": 1,
+            "exit_order_status": str(response.get("status", "")),
+            "roundtrip": roundtrip,
+            "open_positions_monitored": monitored,
+            "email": email,
         }
-    before = client.account()
-    base_before = _asset_balance(before, rules.base_asset)
-    quote_before = _asset_balance(before, rules.quote_asset)
-    base_at_entry = _parse_decimal(str(position.get("base_balance_before_entry", "0")), "0")
-    sell_qty = floor_to_step(max(Decimal("0"), base_before - base_at_entry), rules.step_size)
-    if sell_qty * price < rules.min_notional:
-        raise BinanceLiveSpotSafetyError("open canary position is below Binance minimum sell notional")
-    seed = f"{COURT_NAME}|EXIT|{position['source_trade_id']}|{_now()}"
-    client_order_id = build_client_order_id("rtscanx", seed)
-    intent = DemoOrderIntent(
-        signal_id=seed,
-        symbol=symbol,
-        side="SELL",
-        order_type="MARKET",
-        quantity=sell_qty,
-        reason=f"live_strategy_canary_exit_{exit_reason}",
-    )
-    response = client.create_order(intent, client_order_id)
-    _record_order(
-        root,
-        event_type="EXIT",
-        source_trade_id=str(position["source_trade_id"]),
-        side="SELL",
-        symbol=symbol,
-        client_order_id=client_order_id,
-        response=response,
-        price=price,
-        max_order=_parse_decimal(str(manifest["max_order_notional_eur"]), "10"),
-        reason=f"live_strategy_canary_exit_{exit_reason}",
-        real_money_allowed=True,
-    )
-    after = client.account()
-    quote_after = _asset_balance(after, rules.quote_asset)
-    base_after = _asset_balance(after, rules.base_asset)
-    quote_delta = quote_after - quote_before - _parse_decimal(str(position.get("entry_quote_spent_delta", "0")), "0")
-    roundtrip = {
-        "created_at": _now(),
-        "source_trade_id": position["source_trade_id"],
-        "symbol": symbol,
-        "quote_asset": rules.quote_asset,
-        "entry_client_order_id": position["entry_client_order_id"],
-        "exit_client_order_id": client_order_id,
-        "entry_quote_filled": position["entry_quote_filled"],
-        "exit_quote_filled": str(response.get("cummulativeQuoteQty", "0")),
-        "quote_delta": quote_delta,
-        "base_delta": base_after - _parse_decimal(str(position.get("base_balance_before_entry", "0")), "0"),
-        "quote_balance_before_exit": quote_before,
-        "quote_balance_after_exit": quote_after,
-        "base_balance_after_exit": base_after,
-        "estimated_total_equity_quote_after_exit": quote_after + (base_after * price),
-        "exit_reason": exit_reason,
-        "result_label": "PROFIT" if quote_delta > 0 else "LOSS" if quote_delta < 0 else "FLAT",
-        "setup_class": position.get("setup_class", ""),
-        "convexity_label": position.get("convexity_label", ""),
-        "conviction_tier": position.get("conviction_tier", "normal"),
-        "research_sizing_profile": position.get("research_sizing_profile", ""),
-        "execution_guard_classification": position.get("execution_guard_classification", ""),
-        "execution_patience_attempts": position.get("execution_patience_attempts", ""),
-        "execution_patience_delay_seconds": position.get("execution_patience_delay_seconds", ""),
-    }
-    _append_csv(_paths(root)["roundtrip_ledger"], roundtrip, _roundtrip_fieldnames())
-    position["open"] = False
-    position["closed_at"] = _now()
-    position["exit_client_order_id"] = client_order_id
-    position["exit_exchange_order_id"] = str(response.get("orderId", ""))
-    position["exit_reason"] = exit_reason
-    _write_json(position_path, position)
-    email = _exit_email(root, roundtrip)
-    return {
-        **manifest,
-        "final_classification": ROUNDTRIP_COMPLETED,
-        "reason": "open_canary_position_exit_submitted",
-        "orders_submitted": 1,
-        "exit_order_status": str(response.get("status", "")),
-        "roundtrip": roundtrip,
-        "email": email,
-    }
+    return None
 
 
 def _submit_entry(root: Path, client: BinanceLiveSpotClient, manifest: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
     source_symbol = str(candidate["symbol"]).upper()
+    max_open = int(manifest["max_open_positions"])
+    open_positions = _open_positions(root)
+    if len(open_positions) >= max_open:
+        raise BinanceLiveSpotSafetyError("live_canary_open_position_slots_full")
+    if USDT_TO_USDC.get(source_symbol, "") in _open_position_symbols(root):
+        raise BinanceLiveSpotSafetyError("live_canary_already_has_open_position_for_execution_symbol")
+    max_budget = _parse_decimal(str(manifest["max_test_budget_eur"]), "50")
+    max_order_config = _parse_decimal(str(manifest["max_order_notional_eur"]), "10")
+    remaining_budget = max_budget - _open_position_exposure_quote(root)
+    max_order = min(max_order_config, remaining_budget)
+    if max_order <= Decimal("0"):
+        raise BinanceLiveSpotSafetyError("live_canary_test_budget_fully_allocated")
     guard_decision = evaluate_usdt_signal_to_usdc_execution_guard_with_patience(
         ExecutionSignal(
             source_symbol=source_symbol,
             side="BUY",
-            order_notional_eur=_parse_decimal(str(manifest["max_order_notional_eur"]), "10"),
+            order_notional_eur=max_order,
             source_signal_time=str(candidate.get("source_timestamp", "")),
             signal_id=str(candidate.get("source_trade_id", "")),
         ),
@@ -1072,12 +1125,11 @@ def _submit_entry(root: Path, client: BinanceLiveSpotClient, manifest: dict[str,
     exchange_info = client.exchange_info(symbol)
     rules = parse_symbol_rules(exchange_info, symbol)
     price = client.ticker_price(symbol)
-    max_order = _parse_decimal(str(manifest["max_order_notional_eur"]), "10")
     quantity = quantity_for_notional(max_order, price, rules)
     estimated_notional = quantity * price
     if estimated_notional > max_order:
         raise BinanceLiveSpotSafetyError("computed canary order notional exceeds cap")
-    if estimated_notional > _parse_decimal(str(manifest["max_test_budget_eur"]), "50"):
+    if estimated_notional > max_budget:
         raise BinanceLiveSpotSafetyError("computed canary order exceeds test budget")
     if _daily_closed_loss(root) >= _parse_decimal(str(manifest["max_daily_loss_eur"]), "10"):
         raise BinanceLiveSpotSafetyError("daily canary loss cap reached")
@@ -1142,7 +1194,7 @@ def _submit_entry(root: Path, client: BinanceLiveSpotClient, manifest: dict[str,
         "setup_class": candidate.get("setup_class", ""),
         "convexity_label": candidate.get("convexity_label", ""),
         "conviction_tier": candidate.get("conviction_tier", "normal"),
-        "research_sizing_profile": "a_plus_2p50_elite_3p00_total_5p00; live canary remains capped by RTS_LIVE_CANARY_MAX_ORDER_NOTIONAL_EUR",
+        "research_sizing_profile": "a_plus_2p50_elite_3p00_total_5p00; live canary remains capped by RTS_LIVE_CANARY_MAX_ORDER_NOTIONAL_EUR and RTS_LIVE_CANARY_MAX_TEST_BUDGET_EUR",
         "base_balance_before_entry": base_before,
         "base_balance_after_entry": _asset_balance(after, rules.base_asset),
         "quote_balance_before_entry": quote_before,
@@ -1150,6 +1202,9 @@ def _submit_entry(root: Path, client: BinanceLiveSpotClient, manifest: dict[str,
         "entry_quote_spent_delta": quote_before - _asset_balance(after, rules.quote_asset),
         "estimated_total_equity_quote_after_entry": _asset_balance(after, rules.quote_asset) + (_asset_balance(after, rules.base_asset) * price),
         "max_order_notional_quote": max_order,
+        "max_open_positions": max_open,
+        "open_positions_after_entry": len(open_positions) + 1,
+        "remaining_budget_before_entry": remaining_budget,
         "execution_guard_classification": guard_decision.classification,
         "execution_guard_reasons": guard_decision.reasons,
         "execution_guard_initial_reasons": patience_metrics.get("initial_reasons", []),
@@ -1160,6 +1215,7 @@ def _submit_entry(root: Path, client: BinanceLiveSpotClient, manifest: dict[str,
         "execution_patience_accepted_after_wait": patience_metrics.get("accepted_after_wait", False),
         "execution_patience_decision_rule": patience_metrics.get("decision_rule", ""),
     }
+    _write_json(_position_path(root, str(candidate["source_trade_id"])), position)
     _write_json(_paths(root)["open_position"], position)
     email = _entry_email(root, position)
     return {
@@ -1203,6 +1259,7 @@ def run(mode: str, *, source_ledger: Path | None = None, output_dir: Path | None
                 "real_money_allowed": False,
                 "live_canary_order_path_allowed": False,
                 "open_position": _read_json(_paths(root)["open_position"], {}),
+                "open_positions": [position for _, position in _open_positions(root)],
             }
         elif mode == "execute_once":
             if not manifest["credentials_present"]:
@@ -1211,7 +1268,7 @@ def run(mode: str, *, source_ledger: Path | None = None, output_dir: Path | None
                 raise BinanceLiveSpotSafetyError("missing explicit live-canary confirmations")
             config = BinanceLiveSpotConfig.from_env(require_credentials=True, require_confirmation=False)
             client = BinanceLiveSpotClient(config)
-            exit_status = _maybe_exit_open_position(root, client, manifest)
+            exit_status = _maybe_exit_open_positions(root, client, manifest)
             if exit_status is not None:
                 status = exit_status
             elif not candidates:
@@ -1224,6 +1281,19 @@ def run(mode: str, *, source_ledger: Path | None = None, output_dir: Path | None
                     "orders_submitted": 0,
                     "real_money_allowed": False,
                     "live_canary_order_path_allowed": False,
+                    "open_positions": [position for _, position in _open_positions(root)],
+                }
+            elif len(_open_positions(root)) >= int(manifest["max_open_positions"]):
+                status = {
+                    **manifest,
+                    "final_classification": POSITION_MONITORING,
+                    "reason": "open_position_slots_full_no_exit_condition",
+                    "source_rows_seen": source_rows,
+                    "eligible_signals_seen": len(candidates),
+                    "orders_submitted": 0,
+                    "real_money_allowed": False,
+                    "live_canary_order_path_allowed": False,
+                    "open_positions": [position for _, position in _open_positions(root)],
                 }
             else:
                 status = _submit_entry(root, client, manifest, candidates[-1])

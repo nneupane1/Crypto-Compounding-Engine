@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from structural_compounding_lab.execution.live_strategy_canary_bridge import _entry_email, _exit_email
+from structural_compounding_lab.execution.live_strategy_canary_bridge import (
+    _entry_email,
+    _exit_email,
+    _open_position_exposure_quote,
+    _open_position_symbols,
+    _open_positions,
+    _position_path,
+    _write_json,
+)
 
 
 def _disable_smtp(monkeypatch) -> None:
@@ -44,7 +52,7 @@ def test_entry_email_writes_clear_plain_and_html_artifacts(tmp_path, monkeypatch
     assert "Estimated total canary equity after entry: 111.1234 USDC" in text
     assert "Conviction tier: elite" in text
     assert "Research sizing profile: a_plus_2p50_elite_3p00_total_5p00; live canary remains capped" in text
-    assert "Live canary sizing: tiny fixed cap" in text
+    assert "Live canary sizing: micro-live two-slot cap" in text
     assert "Exit email is sent only after a later SELL fill" in text
     assert "BUY filled: 6 USDC" in html
     assert "Estimated total canary equity after entry" in html
@@ -112,3 +120,19 @@ def test_exit_email_loss_uses_loss_control_not_profit(tmp_path, monkeypatch) -> 
     text = (tmp_path / "alerts" / "latest_live_canary_email.txt").read_text()
     assert "OOPS — LOSS -0.112 USDC" in text
     assert "CONGRATULATIONS — PROFIT" not in text
+
+
+def test_open_position_state_supports_two_independent_slots(tmp_path) -> None:
+    _write_json(
+        _position_path(tmp_path, "ADAUSDT-1"),
+        {"open": True, "source_trade_id": "ADAUSDT-1", "symbol": "ADAUSDC", "entry_quote_filled": "47.50", "created_at": "2026-07-05T00:00:00+00:00"},
+    )
+    _write_json(
+        _position_path(tmp_path, "BNBUSDT-1"),
+        {"open": True, "source_trade_id": "BNBUSDT-1", "symbol": "BNBUSDC", "entry_quote_filled": "47.25", "created_at": "2026-07-05T01:00:00+00:00"},
+    )
+
+    positions = [position for _, position in _open_positions(tmp_path)]
+    assert [position["source_trade_id"] for position in positions] == ["ADAUSDT-1", "BNBUSDT-1"]
+    assert _open_position_symbols(tmp_path) == {"ADAUSDC", "BNBUSDC"}
+    assert _open_position_exposure_quote(tmp_path) == Decimal("94.75")

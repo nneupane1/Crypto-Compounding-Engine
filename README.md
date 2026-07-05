@@ -327,7 +327,8 @@ Largest historical sizing examples:
 
 The notional figure is a research estimate derived from risk divided by stop
 distance. It is not the current live canary amount. Current live canary remains
-tiny-capped by environment controls, currently up to `95 USDC` per order on Hetzner, with one open position and a `25 USDC` daily closed-loss cap.
+micro-capped by environment controls: up to two open positions, about `47.50 USDC`
+per order, `100 USDC` total test budget, and a `25 USDC` daily closed-loss cap.
 
 Production interpretation:
 
@@ -546,8 +547,8 @@ The current real-money readiness means:
 - generic/demo keys are rejected;
 - USDC balance is available;
 - one small buy/sell smoke already proved the path;
-- the canary can place at most one capped micro-live order when a fresh frozen signal appears;
-- max order is capped;
+- the canary can place up to two capped micro-live orders when fresh frozen signals appear;
+- max order and total test budget are capped;
 - max daily loss is capped;
 - artifacts and emails are written.
 
@@ -569,7 +570,7 @@ flowchart TD
 | Stage | Capital | Purpose |
 | --- | ---: | --- |
 | Tiny smoke | small single order | prove buy/sell plumbing |
-| Micro-live canary | up to `95 USDC` per order | prove fresh signal → order → exit lifecycle on the current small account |
+| Micro-live canary | up to two `~47.50 USDC` orders | prove fresh signal → order → exit lifecycle on the current small account |
 | Small live | `€100–€250` | validate real-world fills and emails |
 | Controlled live | `€1,000` | validate repeated live behavior |
 | Intermediate live | `€5,000` | validate scaling and slippage |
@@ -594,8 +595,9 @@ flowchart TD
 | Demo keys in live path | rejected |
 | Historical backlog replay | blocked by default |
 | Duplicate order prevention | state/ledger based |
-| Max open positions in canary | `1` |
-| Current canary max order | `95 USDC` |
+| Max open positions in canary | `2` |
+| Current canary max order | `47.50 USDC` |
+| Current canary total test budget | `100 USDC` |
 | Current canary daily loss cap | `25 USDC` |
 | USDC execution patience | `5m`, only for temporary execution-quality blocks |
 
