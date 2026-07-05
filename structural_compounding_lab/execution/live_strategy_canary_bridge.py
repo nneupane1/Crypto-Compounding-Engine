@@ -52,7 +52,10 @@ BLOCKED_NEEDS_KEYS = "BINANCE_LIVE_STRATEGY_CANARY_BLOCKED_NEEDS_KEYS"
 FAILED = "BINANCE_LIVE_STRATEGY_CANARY_FAILED"
 
 REQUIRED_ENABLED_VALUE = "true"
-REQUIRED_CONFIRMATION = "YES_TINY_REAL_MONEY_STRATEGY_CANARY"
+REQUIRED_CONFIRMATION_VALUES = {
+    "YES_TINY_REAL_MONEY_STRATEGY_CANARY",
+    "YES_MICRO_LIVE_REAL_MONEY_STRATEGY_CANARY",
+}
 REQUIRED_LOSS_ACK_VALUES = {
     "I_ACCEPT_MAX_25_EUR_LIVE_CANARY_BUDGET",
     "I_ACCEPT_MAX_100_EUR_MICRO_LIVE_BUDGET",
@@ -506,7 +509,7 @@ def _limits() -> dict[str, Any]:
 def _confirmations_present() -> bool:
     return (
         os.getenv("RTS_LIVE_CANARY_ENABLED", "").strip().lower() == REQUIRED_ENABLED_VALUE
-        and os.getenv("RTS_LIVE_CANARY_CONFIRM", "").strip() == REQUIRED_CONFIRMATION
+        and os.getenv("RTS_LIVE_CANARY_CONFIRM", "").strip() in REQUIRED_CONFIRMATION_VALUES
         and os.getenv("RTS_LIVE_CANARY_I_UNDERSTAND_MAX_LOSS", "").strip() in REQUIRED_LOSS_ACK_VALUES
     )
 
@@ -534,7 +537,7 @@ def _safety_manifest(mode: str, root: Path, source_ledger: Path) -> dict[str, An
         "run_confirmation_present": confirmations,
         **limits,
         "orders_allowed_in_this_mode": orders_allowed,
-        "tiny_live_canary_only": True,
+        "micro_live_canary_only": True,
         "live_canary_order_path_allowed": orders_allowed,
         "production_strategy_order_path_allowed": False,
         "full_live_trading_allowed": False,

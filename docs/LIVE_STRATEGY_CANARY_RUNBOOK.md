@@ -81,7 +81,7 @@ micro-live canary budget.
 cd /opt/crypto-compounding-engine
 docker compose -f deploy/docker-compose.prod.yml --profile live-canary run --rm \
   -e RTS_LIVE_CANARY_ENABLED=true \
-  -e RTS_LIVE_CANARY_CONFIRM=YES_TINY_REAL_MONEY_STRATEGY_CANARY \
+  -e RTS_LIVE_CANARY_CONFIRM=YES_MICRO_LIVE_REAL_MONEY_STRATEGY_CANARY \
   -e RTS_LIVE_CANARY_I_UNDERSTAND_MAX_LOSS=I_ACCEPT_MAX_100_EUR_MICRO_LIVE_BUDGET \
   live-canary \
   python -m structural_compounding_lab.execution.live_strategy_canary_bridge --mode execute_once
