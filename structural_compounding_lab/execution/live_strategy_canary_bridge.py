@@ -30,8 +30,9 @@ from structural_compounding_lab.execution.binance_live_spot_client import (
 from structural_compounding_lab.execution.demo_order_models import DemoOrderIntent
 from structural_compounding_lab.execution.usdt_usdc_execution_guard import (
     ExecutionSignal,
+    PatienceGuardConfig,
     USDT_TO_USDC,
-    evaluate_usdt_signal_to_usdc_execution_guard,
+    evaluate_usdt_signal_to_usdc_execution_guard_with_patience,
 )
 
 
@@ -295,6 +296,9 @@ def _roundtrip_fieldnames() -> list[str]:
         "base_balance_after_exit",
         "exit_reason",
         "result_label",
+        "execution_guard_classification",
+        "execution_patience_attempts",
+        "execution_patience_delay_seconds",
     ]
 
 
@@ -660,9 +664,11 @@ def _entry_email(root: Path, position: dict[str, Any]) -> dict[str, Any]:
     base_asset = str(position["base_asset"])
     quote_filled = _fmt_decimal(position["entry_quote_filled"], f" {quote_asset}")
     total_equity = position.get("estimated_total_equity_quote_after_entry", position.get("quote_balance_after_entry", ""))
+    patience_attempts = position.get("execution_patience_attempts", "")
+    patience_delay = position.get("execution_patience_delay_seconds", "")
     subject = (
-        f"RTS LIVE CANARY ENTRY: {source_symbol} SIGNAL -> "
-        f"{execution_symbol} BUY {quote_filled}"
+        f"RTS LIVE CANARY ENTRY: {source_symbol} -> "
+        f"{execution_symbol} BUY {quote_filled} | Equity {_fmt_decimal(total_equity, f' {quote_asset}')}"
     )
     html = _html_document(
         title=f"Entry opened: {execution_symbol}",
@@ -680,6 +686,17 @@ def _entry_email(root: Path, position: dict[str, Any]) -> dict[str, Any]:
                     ("Executed quantity", f"{_fmt_decimal(position['entry_executed_qty'])} {base_asset}"),
                     ("Quote filled", quote_filled),
                     ("Estimated total canary equity after entry", _fmt_decimal(total_equity, f" {quote_asset}")),
+                ],
+            ),
+            (
+                "USDC execution patience guard",
+                [
+                    ("Guard", "5-minute symbol-aware USDT-signal → USDC-execution patience guard"),
+                    ("Decision", position.get("execution_guard_classification", "")),
+                    ("Attempts", patience_attempts),
+                    ("Wait before safe execution", f"{patience_delay}s" if patience_delay != "" else ""),
+                    ("Initial block reasons", ", ".join(position.get("execution_guard_initial_reasons", []))),
+                    ("Final reasons", ", ".join(position.get("execution_guard_reasons", []))),
                 ],
             ),
             (
@@ -722,6 +739,15 @@ def _entry_email(root: Path, position: dict[str, Any]) -> dict[str, Any]:
             f"Entry order id: {position['entry_exchange_order_id']}",
             f"Executed quantity: {_fmt_decimal(position['entry_executed_qty'])} {base_asset}",
             f"Quote filled: {quote_filled}",
+            "",
+            "USDC execution patience guard",
+            "-----------------------------",
+            "Guard: 5-minute symbol-aware USDT-signal -> USDC-execution patience guard",
+            f"Decision: {position.get('execution_guard_classification', '')}",
+            f"Attempts: {patience_attempts}",
+            f"Wait before safe execution: {patience_delay}s",
+            f"Initial block reasons: {', '.join(position.get('execution_guard_initial_reasons', []))}",
+            f"Final reasons: {', '.join(position.get('execution_guard_reasons', []))}",
             "",
             "Frozen signal references",
             "------------------------",
@@ -785,6 +811,15 @@ def _exit_email(root: Path, roundtrip: dict[str, Any]) -> dict[str, Any]:
                 ],
             ),
             (
+                "USDC execution patience guard",
+                [
+                    ("Entry guard", str(roundtrip.get("execution_guard_classification", ""))),
+                    ("Entry guard attempts", str(roundtrip.get("execution_patience_attempts", ""))),
+                    ("Entry guard wait", f"{roundtrip.get('execution_patience_delay_seconds', '')}s"),
+                    ("Route", "USDT frozen signal mapped to USDC Spot execution"),
+                ],
+            ),
+            (
                 "Safety",
                 [
                     ("Execution product", "Binance Spot only"),
@@ -819,6 +854,13 @@ def _exit_email(root: Path, roundtrip: dict[str, Any]) -> dict[str, Any]:
             f"Entry quote filled: {_fmt_decimal(roundtrip['entry_quote_filled'], f' {quote_asset}')}",
             f"Exit quote filled: {_fmt_decimal(roundtrip['exit_quote_filled'], f' {quote_asset}')}",
             f"Base delta after close: {_fmt_decimal(roundtrip.get('base_delta', ''))}",
+            "",
+            "USDC execution patience guard",
+            "-----------------------------",
+            f"Entry guard: {roundtrip.get('execution_guard_classification', '')}",
+            f"Entry guard attempts: {roundtrip.get('execution_patience_attempts', '')}",
+            f"Entry guard wait: {roundtrip.get('execution_patience_delay_seconds', '')}s",
+            "Route: USDT frozen signal mapped to USDC Spot execution",
             "",
             "Safety",
             "------",
@@ -911,6 +953,9 @@ def _maybe_exit_open_position(root: Path, client: BinanceLiveSpotClient, manifes
         "estimated_total_equity_quote_after_exit": quote_after + (base_after * price),
         "exit_reason": exit_reason,
         "result_label": "PROFIT" if quote_delta > 0 else "LOSS" if quote_delta < 0 else "FLAT",
+        "execution_guard_classification": position.get("execution_guard_classification", ""),
+        "execution_patience_attempts": position.get("execution_patience_attempts", ""),
+        "execution_patience_delay_seconds": position.get("execution_patience_delay_seconds", ""),
     }
     _append_csv(_paths(root)["roundtrip_ledger"], roundtrip, _roundtrip_fieldnames())
     position["open"] = False
@@ -933,14 +978,15 @@ def _maybe_exit_open_position(root: Path, client: BinanceLiveSpotClient, manifes
 
 def _submit_entry(root: Path, client: BinanceLiveSpotClient, manifest: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
     source_symbol = str(candidate["symbol"]).upper()
-    guard_decision = evaluate_usdt_signal_to_usdc_execution_guard(
+    guard_decision = evaluate_usdt_signal_to_usdc_execution_guard_with_patience(
         ExecutionSignal(
             source_symbol=source_symbol,
             side="BUY",
             order_notional_eur=_parse_decimal(str(manifest["max_order_notional_eur"]), "10"),
             source_signal_time=str(candidate.get("source_timestamp", "")),
             signal_id=str(candidate.get("source_trade_id", "")),
-        )
+        ),
+        patience_config=PatienceGuardConfig(patience_seconds=300, recheck_interval_seconds=15),
     )
     if not guard_decision.accepted:
         raise BinanceLiveSpotSafetyError("usdt_usdc_execution_guard_blocked:" + ",".join(guard_decision.reasons))
@@ -989,6 +1035,7 @@ def _submit_entry(root: Path, client: BinanceLiveSpotClient, manifest: dict[str,
         real_money_allowed=True,
     )
     after = client.account()
+    patience_metrics = dict(guard_decision.metrics.get("execution_patience_guard", {}))
     position = {
         "open": True,
         "created_at": _now(),
@@ -1014,6 +1061,15 @@ def _submit_entry(root: Path, client: BinanceLiveSpotClient, manifest: dict[str,
         "entry_quote_spent_delta": quote_before - _asset_balance(after, rules.quote_asset),
         "estimated_total_equity_quote_after_entry": _asset_balance(after, rules.quote_asset) + (_asset_balance(after, rules.base_asset) * price),
         "max_order_notional_quote": max_order,
+        "execution_guard_classification": guard_decision.classification,
+        "execution_guard_reasons": guard_decision.reasons,
+        "execution_guard_initial_reasons": patience_metrics.get("initial_reasons", []),
+        "execution_patience_guard_enabled": True,
+        "execution_patience_seconds": patience_metrics.get("patience_seconds", 300),
+        "execution_patience_attempts": patience_metrics.get("attempts", ""),
+        "execution_patience_delay_seconds": patience_metrics.get("delay_seconds", ""),
+        "execution_patience_accepted_after_wait": patience_metrics.get("accepted_after_wait", False),
+        "execution_patience_decision_rule": patience_metrics.get("decision_rule", ""),
     }
     _write_json(_paths(root)["open_position"], position)
     email = _entry_email(root, position)

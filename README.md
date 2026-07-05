@@ -18,6 +18,7 @@ Current status: guarded real-money canary is ready and running on Hetzner with t
 | [Per-asset full-history transfer records](#per-asset-full-history-transfer-records) | What each asset did independently under the frozen transfer court, including research and sealed-holdout net-cost equity. |
 | [Multi-asset engine evolution](#multi-asset-engine-evolution) | How the system moved from isolated assets to a realistic capped multi-asset allocator. |
 | [USDT signal and USDC execution evidence](#usdt-signal-and-usdc-execution-evidence) | Why USDT remains the signal source, why USDC is the live execution route, and which numbers justify the bridge. |
+| [5-minute USDC execution patience guard](#5-minute-usdc-execution-patience-guard) | The locked execution guard that waits briefly for safe USDC spread/deviation/depth without changing the frozen strategy. |
 | [Why USDT signals and USDC execution](#why-usdt-signals-and-usdc-execution) | The conceptual reason for separating signal tape from execution quote. |
 | [System flow](#system-flow) | Mermaid chart of live data → frozen signal → guarded USDC canary execution. |
 | [Hetzner production layout](#hetzner-production-layout) | Docker services, systemd timer, and persistent volumes. |
@@ -77,9 +78,12 @@ That split is not a hack. It is the useful engineering compromise: keep the best
 | 6H overlay | `MULTI_ASSET_6H_CONTEXT_OVERLAY_FREEZE_CANDIDATE_RESEARCH_ONLY` |
 | Execution style | long-only Binance Spot for live/canary |
 | Research result after costs + yearly tax reserve | `€5,393,682.06` from `€25,000` |
-| Bridge research result after costs + yearly tax reserve | `€5,333,441.95` from `€25,000` |
+| Bridge research result after costs + yearly tax reserve before live guard filtering | `€5,333,441.95` from `€25,000` |
+| Locked live execution guard | symbol-aware USDC execution safety with `5m` patience |
+| 5m patience-guard research estimate after costs + yearly tax reserve | `€4,115,595.94` from `€25,000` |
+| 5m patience-guard sealed holdout | `€110,226.24` from `€25,000` |
 
-The important number is not a fantasy “gross moon number”. The relevant production-candidate number is the guarded, cost-aware, tax-reserve-aware USDT-signal → USDC-execution result around `€5.33M–€5.39M` from a `€25k` starting anchor in research.
+The important number is not a fantasy “gross moon number”. The relevant production-candidate research range is the cost-aware, tax-reserve-aware USDT-signal → USDC-execution result around `€5.33M–€5.39M` from a `€25k` starting anchor. The stricter live-execution guard-filtered estimate after locking the 5-minute USDC patience guard is `€4.12M` research with the same `€110.23k` sealed holdout.
 
 That is why this version is the current production candidate.
 
@@ -182,6 +186,7 @@ scanner result was forced through increasingly realistic constraints.
 | BTC inclusion, 9 symbols | Added BTC as a separate court, not by mutating the 8-symbol result | `€7,973,114.87` | `€87,951.93` | `MULTI_ASSET_9_SYMBOL_BTC_INCLUSION_FREEZE_CANDIDATE_RESEARCH_ONLY` |
 | 6H context overlay | Tested 6H context as an overlay, not a native 6H execution rewrite | `€8,172,676.50` | `€90,209.37` | `MULTI_ASSET_6H_CONTEXT_OVERLAY_FREEZE_CANDIDATE_RESEARCH_ONLY` |
 | USDT signal → USDC execution bridge | Preserved USDT signal tape, mapped live execution to USDC Spot pairs | `€5,333,441.95` baseline bridge / `€5,393,682.06` frozen 2% allocator | `€63,021.19` baseline bridge / `€110,226.24` frozen 2% allocator | `USDT_SIGNAL_USDC_EXECUTION_2PCT_GUARDED_CANDIDATE_FROZEN_RESEARCH_ONLY` |
+| 5m USDC execution patience guard | Waits briefly only for temporary USDC spread/deviation/depth to become safe; strategy signal unchanged | `€4,115,595.94` | `€110,226.24` | `EXECUTION_PATIENCE_GUARD_CANDIDATE_IMPROVED_RESEARCH_ONLY` |
 
 The progression matters. The engine did not jump from “large backtest” to
 “trade €25k live”. It went through constraints that made the numbers smaller
@@ -218,6 +223,8 @@ execution route, while USDT remained the better historical signal tape.
 | USDT-signal → USDC-execution baseline bridge holdout | `€63,021.19` |
 | Frozen 2% USDC allocator research | `€5,393,682.06` |
 | Frozen 2% USDC allocator holdout | `€110,226.24` |
+| Locked 5m execution-patience guard research | `€4,115,595.94` |
+| Locked 5m execution-patience guard holdout | `€110,226.24` |
 | Frozen allocator variant | `early_two_1pct_each_total_2pct` |
 | Max slots from start | `2` |
 | Max risk per trade | `1%` |
@@ -227,6 +234,61 @@ execution route, while USDT remained the better historical signal tape.
 That is the current “ready for real-money canary” conclusion: not because the
 system is allowed to trade full capital, but because the route from signal to
 USDC Spot execution has evidence and hard safety gates.
+
+---
+
+## 5-minute USDC execution patience guard
+
+The locked production execution guard is:
+
+```text
+USDT frozen signal -> USDC Spot route -> symbol-aware safety check -> wait up to 5 minutes if only execution quality is temporarily bad
+```
+
+It does not change:
+
+- frozen USDT signal logic;
+- entries;
+- exits;
+- thresholds;
+- allocator;
+- cost model;
+- tax reserve model;
+- scheduler frequency;
+- canary caps;
+- live product type.
+
+It only changes what the live execution hand does when USDC is briefly unsafe. If the USDT signal is valid but the matching USDC pair has temporary spread, close-deviation, or orderbook-depth problems, the guard rechecks for up to `300` seconds. It executes only after USDC becomes safe.
+
+It does not wait or retry for:
+
+- stale USDT candle;
+- stale USDC candle;
+- unsupported symbol;
+- non-BUY side;
+- exchange filter failure;
+- minNotional / stepSize / tickSize failure;
+- canary notional cap failure.
+
+Guard tiers:
+
+| Tier | Symbols | Max USDT/USDC close deviation | Max USDC spread | Required depth multiple |
+| --- | --- | ---: | ---: | ---: |
+| Core deep | `BTCUSDC`, `ETHUSDC`, `BNBUSDC`, `SOLUSDC` | `25 bps` | `12 bps` | `8x` |
+| Normal | `ADAUSDC`, `XRPUSDC`, `LINKUSDC` | `35 bps` | `20 bps` | `6x` |
+| Careful | `AVAXUSDC`, `DOGEUSDC` | `40 bps` | `25 bps` | `12x` |
+
+Patience court result:
+
+| Candidate | Research equity | Sealed holdout | Recovered trades | Expired signals | Decision |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Old uniform immediate guard | `€3,957,887.54` | `€110,226.24` | `0` | `578` | superseded |
+| Symbol-aware hard reject | `€3,859,661.14` | `€110,226.24` | `0` | `599` | safer but too harsh |
+| Patience guard 3m | `€4,078,039.41` | `€110,226.24` | `102` | `497` | good |
+| Patience guard 5m | `€4,115,595.94` | `€110,226.24` | `121` | `478` | locked |
+| Patience guard 10m | `€4,160,707.56` | `€110,226.24` | `144` | `455` | not materially better on holdout |
+
+Final decision: `5m` is locked because it improves executable research equity versus immediate rejection while avoiding unnecessary waiting. The frozen research strategy remains unchanged.
 
 ---
 
@@ -281,8 +343,10 @@ flowchart TD
     G --> H{Fresh eligible long signal?}
     H -- no --> I[No order, status artifact]
     H -- yes --> J[USDT to USDC bridge guard]
-    J --> K{Safety gates pass?}
-    K -- no --> L[Blocked artifact + alert]
+    J --> K{USDC safe now?}
+    K -- temporary spread/deviation/depth block --> K2[Recheck up to 5 minutes]
+    K2 --> K
+    K -- hard block or expired --> L[Blocked artifact + alert]
     K -- yes --> M[Tiny Binance Spot USDC buy]
     M --> N[Open-position state]
     N --> O{Target or stop reached later?}
@@ -327,6 +391,7 @@ The production image intentionally does not ship the huge historical research ar
 | `ledger/live_canary_orders.csv` | Binance order records |
 | `ledger/live_canary_fills.csv` | fill records |
 | `ledger/live_canary_roundtrips.csv` | closed buy/sell PnL records |
+| `state/open_position.json` | open canary state, including execution guard classification and patience delay |
 | `alerts/latest_live_canary_email.txt` | latest canary plain-text email draft |
 | `alerts/latest_live_canary_email.html` | latest canary HTML email draft |
 
@@ -356,6 +421,7 @@ Both now use the same clean layout:
 - execution symbol;
 - trade technicals;
 - PnL and cost fields;
+- 5-minute USDC execution patience guard status;
 - safety gates;
 - plain-text and HTML artifacts.
 
@@ -426,6 +492,7 @@ flowchart TD
 | Max open positions in canary | `1` |
 | Current canary max order | `6 USDC` |
 | Current canary daily loss cap | `3 USDC` |
+| USDC execution patience | `5m`, only for temporary execution-quality blocks |
 
 ---
 
@@ -565,6 +632,15 @@ docker compose -f deploy/docker-compose.prod.yml --profile live-canary run --rm 
   live-canary python -m structural_compounding_lab.execution.live_strategy_canary_bridge --mode status
 ```
 
+Run public USDT→USDC guard check with the locked 5m patience path and no order:
+
+```bash
+docker compose -f deploy/docker-compose.prod.yml --profile live-canary run --rm \
+  live-canary python -m structural_compounding_lab.execution.usdt_usdc_execution_guard \
+  --source-symbol BTCUSDT --side BUY --order-notional-eur 6 --patience \
+  --patience-seconds 300 --recheck-interval-seconds 15
+```
+
 ---
 
 ## Local production rehearsal
@@ -609,6 +685,7 @@ The current production architecture is coherent:
 - USDT remains the best signal tape.
 - USDC is the practical Spot execution route.
 - The bridge was researched and frozen as a candidate.
+- The 5-minute USDC execution patience guard is locked for live canary routing.
 - The Hetzner Docker runtime is separated from the local research machine.
 - The canary is tiny, capped, and real-money guarded.
 - Emails and artifacts now clearly separate signal events from Binance order events.

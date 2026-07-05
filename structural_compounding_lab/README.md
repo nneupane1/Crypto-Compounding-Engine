@@ -5,6 +5,7 @@ This folder contains the Python package for the Crypto Compounding Engine:
 - market-data ingestion and resampling
 - frozen research/runtime strategy modules
 - USDT-signal to USDC-execution bridge logic
+- 5-minute USDC execution patience guard
 - guarded Binance Spot canary execution
 - email/reporting helpers
 - runtime diagnostics and tests
