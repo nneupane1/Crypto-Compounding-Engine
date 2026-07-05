@@ -33,6 +33,19 @@ The active production runtime is:
   fresh-signal execution only;
 - lightweight read-only dashboard API and Next.js production dashboard.
 
+Current Hetzner rehearsal mode:
+
+- the Docker `runtime` service runs the frozen USDT-quoted signal engine on
+  Hetzner every five minutes;
+- the runtime writes checkpointed `1m`, `15m`, `1h`, and `6h` artifacts into
+  Docker volumes;
+- the separate systemd `rts-live-canary-usdc.timer` checks those fresh local
+  signals every five minutes;
+- fresh long-only USDT signals are mapped through the guarded USDT -> USDC
+  execution bridge;
+- tiny real Binance Spot orders are capped independently from the diagnostic
+  `€25,000` shadow equity.
+
 Safety defaults:
 
 - `paper_validation_ready=false`
@@ -127,3 +140,12 @@ docker compose -f deploy/docker-compose.prod.yml --profile live-canary run --rm 
 This profile does not enable full live trading. It rejects short selling,
 margin, futures, withdrawals, generic keys, demo keys, and historical backlog
 replay by default.
+
+For the current USDC rehearsal, install the systemd templates in
+`deploy/systemd/` on Hetzner. The intended split is:
+
+- `runtime` container = USDT signal brain;
+- `rts-live-canary-usdc.timer` = tiny USDC execution hand;
+- max order cap = `6 USDC`;
+- max daily loss cap = `3 USDC`;
+- max open positions = `1`.

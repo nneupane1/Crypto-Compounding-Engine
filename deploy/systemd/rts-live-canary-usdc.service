@@ -1,0 +1,9 @@
+[Unit]
+Description=RTS guarded USDT-signal to USDC tiny live canary
+Wants=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/crypto-compounding-engine
+ExecStart=/usr/bin/docker compose -f deploy/docker-compose.prod.yml --profile live-canary run --rm -e RTS_LIVE_CANARY_MAX_ACCOUNT_CAPITAL_EUR=150 -e RTS_LIVE_CANARY_MAX_TEST_BUDGET_EUR=15 -e RTS_LIVE_CANARY_MAX_ORDER_NOTIONAL_EUR=6 -e RTS_LIVE_CANARY_MAX_DAILY_LOSS_EUR=3 -e RTS_LIVE_CANARY_MAX_OPEN_POSITIONS=1 -e RTS_LIVE_CANARY_LOOKBACK_HOURS=24 -e RTS_LIVE_CANARY_ENABLED=true -e RTS_LIVE_CANARY_CONFIRM=YES_TINY_REAL_MONEY_STRATEGY_CANARY -e RTS_LIVE_CANARY_I_UNDERSTAND_MAX_LOSS=I_ACCEPT_MAX_25_EUR_LIVE_CANARY_BUDGET live-canary python -m structural_compounding_lab.execution.live_strategy_canary_bridge --mode execute_once

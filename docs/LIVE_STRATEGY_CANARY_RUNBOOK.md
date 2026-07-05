@@ -98,11 +98,42 @@ The frozen production universe is USDT-quoted:
 
 `ADAUSDT, LINKUSDT, BNBUSDT, XRPUSDT, AVAXUSDT, DOGEUSDT, ETHUSDT, BTCUSDT, SOLUSDT`
 
-That means the live canary needs a small free USDT balance before it can execute
-most strategy signals. A EUR balance alone is enough for the separate `BTCEUR`
-tiny smoke, but not for the nine-symbol USDT strategy canary.
+The production canary does not buy USDT pairs directly. It uses USDT candles and
+signals as the brain, then maps accepted fresh long signals to the matching
+USDC Spot pair for execution:
 
-For a tiny canary test, convert only a small amount such as `€30–€50` to USDT.
+`ADAUSDT -> ADAUSDC`, `BTCUSDT -> BTCUSDC`, etc.
+
+That means the live canary needs a small free USDC balance before it can execute
+strategy signals. A EUR balance alone is not enough. For a tiny canary test,
+convert only a small amount such as `€30–€100` equivalent to USDC.
+
+## Hetzner timer mode
+
+The recommended production rehearsal runs both pieces on Hetzner:
+
+- Docker `runtime`: fetches public `1m` USDT-quoted candles, resamples
+  `15m`/`1h`/`6h`, writes checkpoints, and records frozen shadow signals.
+- systemd `rts-live-canary-usdc.timer`: checks the local runtime ledger every
+  five minutes and may execute only a fresh tiny USDC canary order.
+
+Install/update the timer:
+
+```bash
+cd /opt/crypto-compounding-engine
+sudo cp deploy/systemd/rts-live-canary-usdc.service /etc/systemd/system/
+sudo cp deploy/systemd/rts-live-canary-usdc.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now rts-live-canary-usdc.timer
+```
+
+Check it:
+
+```bash
+systemctl status rts-live-canary-usdc.timer
+systemctl list-timers --all | grep rts-live-canary
+cat structural_compounding_lab/output/binance_live_strategy_canary_court_001/latest_status.json
+```
 
 ## Artifacts
 

@@ -47,3 +47,23 @@ Persistent state lives in Docker volumes:
 
 The image includes only lightweight runtime seed files. It does not include the
 local 8-year research archives.
+
+Current production rehearsal layout:
+
+- `runtime` container stays running on Hetzner and produces fresh USDT-quoted
+  frozen strategy signals from public Binance candles.
+- `rts-live-canary-usdc.timer` stays running on Hetzner and checks every five
+  minutes for fresh local signals.
+- The live canary maps USDT signal symbols to USDC Spot execution symbols and
+  uses tiny hard caps: `6 USDC` max order, one open position, `3 USDC` daily
+  loss cap.
+- Full live trading remains disabled.
+
+Install the timer after deployment:
+
+```bash
+sudo cp deploy/systemd/rts-live-canary-usdc.service /etc/systemd/system/
+sudo cp deploy/systemd/rts-live-canary-usdc.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now rts-live-canary-usdc.timer
+```

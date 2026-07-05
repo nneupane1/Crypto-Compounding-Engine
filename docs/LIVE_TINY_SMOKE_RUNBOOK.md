@@ -96,7 +96,9 @@ Important files:
 
 Do not add the full intended capital before preflight passes.
 
-For a `€1,000` account test, only a small USDT balance is required for the smoke itself. If the account is funded in EUR, convert only a small amount first, such as `€30–€50` equivalent to USDT, then run the tiny smoke.
+For the current EEA/USDC rehearsal, use a USDC-quoted smoke symbol such as
+`BTCUSDC`. If the account is funded in EUR, convert only a small amount first,
+such as `€30–€100` equivalent to USDC, then run the tiny smoke.
 
 ## Promotion rule
 
