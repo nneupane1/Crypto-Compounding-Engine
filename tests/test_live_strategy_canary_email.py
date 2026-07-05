@@ -30,6 +30,10 @@ def test_entry_email_writes_clear_plain_and_html_artifacts(tmp_path, monkeypatch
             "entry_reference": "0.50",
             "stop_reference": "0.49",
             "target_reference": "0.55",
+            "setup_class": "A",
+            "convexity_label": "elite_convexity",
+            "conviction_tier": "elite",
+            "research_sizing_profile": "a_plus_2p50_elite_3p00_total_5p00; live canary remains capped",
             "max_order_notional_quote": Decimal("6"),
         },
     )
@@ -38,9 +42,13 @@ def test_entry_email_writes_clear_plain_and_html_artifacts(tmp_path, monkeypatch
     html = (tmp_path / "alerts" / "latest_live_canary_email.html").read_text()
     assert "BUY FILLED: 6 USDC" in text
     assert "Estimated total canary equity after entry: 111.1234 USDC" in text
+    assert "Conviction tier: elite" in text
+    assert "Research sizing profile: a_plus_2p50_elite_3p00_total_5p00; live canary remains capped" in text
+    assert "Live canary sizing: tiny fixed cap" in text
     assert "Exit email is sent only after a later SELL fill" in text
     assert "BUY filled: 6 USDC" in html
     assert "Estimated total canary equity after entry" in html
+    assert "A+/Elite research sizing label" in html
     assert record["email_sent"] is False
 
 
@@ -61,6 +69,10 @@ def test_exit_email_profit_has_congratulations_pnl_and_total_equity(tmp_path, mo
             "estimated_total_equity_quote_after_exit": Decimal("111.438"),
             "exit_reason": "target_reference_reached",
             "result_label": "PROFIT",
+            "setup_class": "A",
+            "convexity_label": "elite_convexity",
+            "conviction_tier": "elite",
+            "research_sizing_profile": "a_plus_2p50_elite_3p00_total_5p00; live canary remains capped",
         },
     )
 
@@ -68,10 +80,12 @@ def test_exit_email_profit_has_congratulations_pnl_and_total_equity(tmp_path, mo
     html = (tmp_path / "alerts" / "latest_live_canary_email.html").read_text()
     assert "CONGRATULATIONS — PROFIT +0.438 USDC" in text
     assert "Total canary equity after exit: 111.438 USDC" in text
-    assert "Subject: RTS LIVE CANARY EXIT CONGRATULATIONS PROFIT" in text
+    assert "Subject: RTS LIVE CANARY EXIT CONGRATULATIONS PROFIT [ELITE]" in text
+    assert "Conviction tier: elite" in text
     assert "CONGRATULATIONS" in html
     assert "+0.438 USDC" in html
     assert "111.438 USDC" in html
+    assert "A+/Elite research sizing label" in html
     assert record["email_sent"] is False
 
 

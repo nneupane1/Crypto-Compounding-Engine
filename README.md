@@ -19,6 +19,7 @@ Current status: guarded real-money canary is ready and running on Hetzner with t
 | [Multi-asset engine evolution](#multi-asset-engine-evolution) | How the system moved from isolated assets to a realistic capped multi-asset allocator. |
 | [USDT signal and USDC execution evidence](#usdt-signal-and-usdc-execution-evidence) | Why USDT remains the signal source, why USDC is the live execution route, and which numbers justify the bridge. |
 | [5-minute USDC execution patience guard](#5-minute-usdc-execution-patience-guard) | The locked execution guard that waits briefly for safe USDC spread/deviation/depth without changing the frozen strategy. |
+| [A+/Elite conviction sizing court](#aelite-conviction-sizing-court) | The research-only sizing upgrade: same frozen signals, larger risk only for A+/Elite signals, drawdown episodes, and max historical sizing. |
 | [Why USDT signals and USDC execution](#why-usdt-signals-and-usdc-execution) | The conceptual reason for separating signal tape from execution quote. |
 | [System flow](#system-flow) | Mermaid chart of live data → frozen signal → guarded USDC canary execution. |
 | [Hetzner production layout](#hetzner-production-layout) | Docker services, systemd timer, and persistent volumes. |
@@ -82,8 +83,10 @@ That split is not a hack. It is the useful engineering compromise: keep the best
 | Locked live execution guard | symbol-aware USDC execution safety with `5m` patience |
 | 5m patience-guard research estimate after costs + yearly tax reserve | `€4,115,595.94` from `€25,000` |
 | 5m patience-guard sealed holdout | `€110,226.24` from `€25,000` |
+| A+/Elite conviction sizing research after costs + yearly tax reserve | `€15,488,951.85` from `€25,000` |
+| A+/Elite conviction sizing sealed holdout after costs + yearly tax reserve | `€714,359.35` from `€25,000` |
 
-The important number is not a fantasy “gross moon number”. The relevant production-candidate research range is the cost-aware, tax-reserve-aware USDT-signal → USDC-execution result around `€5.33M–€5.39M` from a `€25k` starting anchor. The stricter live-execution guard-filtered estimate after locking the 5-minute USDC patience guard is `€4.12M` research with the same `€110.23k` sealed holdout.
+The important number is not a fantasy “gross moon number”. The relevant production-candidate research range first settled around the cost-aware, tax-reserve-aware USDT-signal → USDC-execution result of `€5.33M–€5.39M` from a `€25k` starting anchor. After the A+/Elite conviction sizing court, the same frozen signal ledger improved to `€15.49M` research and `€714.36k` sealed holdout. This is a sizing candidate, not a permission switch for full live capital.
 
 That is why this version is the current production candidate.
 
@@ -187,6 +190,7 @@ scanner result was forced through increasingly realistic constraints.
 | 6H context overlay | Tested 6H context as an overlay, not a native 6H execution rewrite | `€8,172,676.50` | `€90,209.37` | `MULTI_ASSET_6H_CONTEXT_OVERLAY_FREEZE_CANDIDATE_RESEARCH_ONLY` |
 | USDT signal → USDC execution bridge | Preserved USDT signal tape, mapped live execution to USDC Spot pairs | `€5,333,441.95` baseline bridge / `€5,393,682.06` frozen 2% allocator | `€63,021.19` baseline bridge / `€110,226.24` frozen 2% allocator | `USDT_SIGNAL_USDC_EXECUTION_2PCT_GUARDED_CANDIDATE_FROZEN_RESEARCH_ONLY` |
 | 5m USDC execution patience guard | Waits briefly only for temporary USDC spread/deviation/depth to become safe; strategy signal unchanged | `€4,115,595.94` | `€110,226.24` | `EXECUTION_PATIENCE_GUARD_CANDIDATE_IMPROVED_RESEARCH_ONLY` |
+| A+/Elite conviction sizing | Same frozen signal ledger; only risk allocation changes by setup quality | `€15,488,951.85` | `€714,359.35` | `A_PLUS_CONVICTION_SIZING_FREEZE_CANDIDATE_PASSED_RESEARCH_ONLY` |
 
 The progression matters. The engine did not jump from “large backtest” to
 “trade €25k live”. It went through constraints that made the numbers smaller
@@ -225,11 +229,112 @@ execution route, while USDT remained the better historical signal tape.
 | Frozen 2% USDC allocator holdout | `€110,226.24` |
 | Locked 5m execution-patience guard research | `€4,115,595.94` |
 | Locked 5m execution-patience guard holdout | `€110,226.24` |
+| A+/Elite conviction sizing research | `€15,488,951.85` |
+| A+/Elite conviction sizing holdout | `€714,359.35` |
 | Frozen allocator variant | `early_two_1pct_each_total_2pct` |
 | Max slots from start | `2` |
 | Max risk per trade | `1%` |
 | Max total open risk from start | `2%` |
 | Frozen classification | `USDT_SIGNAL_USDC_EXECUTION_2PCT_GUARDED_CANDIDATE_FROZEN_RESEARCH_ONLY` |
+
+---
+
+## A+/Elite conviction sizing court
+
+The A+/Elite court answers one narrow question:
+
+```text
+If the exact same frozen strategy signals happen, what if higher-conviction
+signals receive larger risk allocation?
+```
+
+It does not change:
+
+- EMA/VWAP/structure/liquidity/breakout logic;
+- entries;
+- exits;
+- thresholds;
+- timeframe resampling;
+- USDT signal generation;
+- USDC execution bridge;
+- long-only Spot constraint.
+
+It changes only the risk allocation after a frozen signal already exists.
+
+Source artifact:
+
+```text
+structural_compounding_lab/output/a_plus_conviction_sizing_court_001/
+a_plus_conviction_sizing_summary.json
+```
+
+Classification:
+
+```text
+A_PLUS_CONVICTION_SIZING_FREEZE_CANDIDATE_PASSED_RESEARCH_ONLY
+```
+
+Sizing profile:
+
+| Signal tier | Rule | Risk allocation |
+| --- | --- | ---: |
+| Normal | all accepted signals not classified as A+ or elite | `1.00%` |
+| A+ | `setup_class=A` or `convexity_label=strong_convexity` | `2.50%` |
+| Elite | `convexity_label=elite_convexity` | `3.00%` |
+
+Portfolio risk ladder:
+
+| Active equity threshold | Max slots | Max total open risk |
+| ---: | ---: | ---: |
+| `€0` | `2` | `5.00%` |
+| `€100,000` | `3` | `7.50%` |
+| `€300,000` | `5` | `10.00%` |
+
+Result comparison:
+
+| Scenario | Research after costs + yearly tax reserve | Sealed holdout after costs + yearly tax reserve |
+| --- | ---: | ---: |
+| Frozen 1% reference | `€5,393,682.06` | `€110,226.24` |
+| A+/Elite conviction sizing | `€15,488,951.85` | `€714,359.35` |
+
+Trade counts:
+
+| Period | Candidate trades | Selected trades |
+| --- | ---: | ---: |
+| Research | `2,650` | `2,647` |
+| Sealed holdout | `270` | `257` |
+
+Drawdown detail:
+
+| Period | Peak | Trough | Fall | Trade-driven drawdown | Recovery |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Research | `€2,957,089.53` on `2019-12-31 20:00 UTC` | `€1,571,438.31` on `2020-01-09 08:00 UTC` | `-€1,385,651.22` | `-46.86%` | recovered by `2020-05-13 06:00 UTC`, about `125` days after trough |
+| Sealed holdout | `€554,511.81` on `2026-04-17 19:00 UTC` | `€429,681.98` on `2026-04-22 23:00 UTC` | `-€124,829.83` | `-22.51%` | recovered by `2026-05-07 18:00 UTC`, about `15` days after trough |
+
+Official max drawdown can look larger because the accounting model reserves tax
+at year-end. That is capital leaving the trading account for tax planning, not
+a trade-by-trade strategy loss. The model compounds trade PnL through the year
+and applies the German tax reserve annually.
+
+Largest historical sizing examples:
+
+| Measure | Value |
+| --- | ---: |
+| Highest risk amount used by the court | `€15,000.00` |
+| Signal | `BTCUSDT`, elite tier, `2019-04-25 05:00 UTC` entry |
+| Largest estimated position notional from tight-stop replay math | about `€9,993,954.99` |
+| Signal | `BTCUSDT`, elite tier, `2025-09-13 07:00 UTC` entry |
+
+The notional figure is a research estimate derived from risk divided by stop
+distance. It is not the current live canary amount. Current live canary remains
+tiny-capped by environment controls, currently `6 USDC` per order on Hetzner.
+
+Production interpretation:
+
+- A+/Elite sizing is a research-validated sizing candidate.
+- Full capital live deployment is still gated.
+- Hetzner canary emails label the conviction tier for audit clarity.
+- Tiny canary order caps remain unchanged.
 
 That is the current “ready for real-money canary” conclusion: not because the
 system is allowed to trade full capital, but because the route from signal to

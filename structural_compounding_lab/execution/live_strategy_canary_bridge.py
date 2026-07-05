@@ -215,6 +215,22 @@ def _source_target(row: dict[str, str]) -> str:
     return str(row.get("exit_price") or row.get("target_reference") or "")
 
 
+def _source_setup_class(row: dict[str, str]) -> str:
+    return str(row.get("setup_class") or row.get("source_setup_class") or "").strip().upper()
+
+
+def _source_convexity_label(row: dict[str, str]) -> str:
+    return str(row.get("convexity_label") or row.get("personality_label") or "").strip().lower()
+
+
+def _conviction_tier(setup_class: str, convexity_label: str) -> str:
+    if str(convexity_label).lower() == "elite_convexity":
+        return "elite"
+    if str(setup_class).upper() == "A" or str(convexity_label).lower() == "strong_convexity":
+        return "a_plus"
+    return "normal"
+
+
 def _activation_timestamp(root: Path, source_rows: list[dict[str, str]], allow_backlog: bool) -> datetime | None:
     if allow_backlog:
         return None
@@ -248,6 +264,9 @@ def _candidate_fieldnames() -> list[str]:
         "entry_reference",
         "stop_reference",
         "target_reference",
+        "setup_class",
+        "convexity_label",
+        "conviction_tier",
         "eligible",
         "skip_reason",
         "mode",
@@ -296,6 +315,10 @@ def _roundtrip_fieldnames() -> list[str]:
         "base_balance_after_exit",
         "exit_reason",
         "result_label",
+        "setup_class",
+        "convexity_label",
+        "conviction_tier",
+        "research_sizing_profile",
         "execution_guard_classification",
         "execution_patience_attempts",
         "execution_patience_delay_seconds",
@@ -569,6 +592,8 @@ def _candidate_rows(root: Path, source_ledger: Path, *, allow_backlog: bool, loo
         symbol = _source_symbol(row)
         direction = _source_direction(row)
         event_type = _source_event_type(row)
+        setup_class = _source_setup_class(row)
+        convexity_label = _source_convexity_label(row)
         reason = ""
         if not _row_is_trade_signal(row):
             reason = "not_a_trade_entry_signal"
@@ -601,6 +626,9 @@ def _candidate_rows(root: Path, source_ledger: Path, *, allow_backlog: bool, loo
             "entry_reference": _source_entry(row),
             "stop_reference": _source_stop(row),
             "target_reference": _source_target(row),
+            "setup_class": setup_class,
+            "convexity_label": convexity_label,
+            "conviction_tier": _conviction_tier(setup_class, convexity_label),
             "eligible": not bool(reason),
             "skip_reason": reason,
             "mode": "",
@@ -666,8 +694,10 @@ def _entry_email(root: Path, position: dict[str, Any]) -> dict[str, Any]:
     total_equity = position.get("estimated_total_equity_quote_after_entry", position.get("quote_balance_after_entry", ""))
     patience_attempts = position.get("execution_patience_attempts", "")
     patience_delay = position.get("execution_patience_delay_seconds", "")
+    conviction_tier = str(position.get("conviction_tier") or "normal")
+    research_sizing_profile = str(position.get("research_sizing_profile") or "A+/Elite research sizing candidate; live canary remains tiny-capped")
     subject = (
-        f"RTS LIVE CANARY ENTRY: {source_symbol} -> "
+        f"RTS LIVE CANARY ENTRY [{conviction_tier.upper()}]: {source_symbol} -> "
         f"{execution_symbol} BUY {quote_filled} | Equity {_fmt_decimal(total_equity, f' {quote_asset}')}"
     )
     html = _html_document(
@@ -686,6 +716,16 @@ def _entry_email(root: Path, position: dict[str, Any]) -> dict[str, Any]:
                     ("Executed quantity", f"{_fmt_decimal(position['entry_executed_qty'])} {base_asset}"),
                     ("Quote filled", quote_filled),
                     ("Estimated total canary equity after entry", _fmt_decimal(total_equity, f" {quote_asset}")),
+                ],
+            ),
+            (
+                "A+/Elite research sizing label",
+                [
+                    ("Conviction tier", conviction_tier),
+                    ("Setup class", position.get("setup_class", "")),
+                    ("Convexity label", position.get("convexity_label", "")),
+                    ("Research sizing profile", research_sizing_profile),
+                    ("Live canary sizing", "tiny fixed cap; research sizing is not full-live enabled"),
                 ],
             ),
             (
@@ -740,6 +780,14 @@ def _entry_email(root: Path, position: dict[str, Any]) -> dict[str, Any]:
             f"Executed quantity: {_fmt_decimal(position['entry_executed_qty'])} {base_asset}",
             f"Quote filled: {quote_filled}",
             "",
+            "A+/Elite research sizing label",
+            "--------------------------------",
+            f"Conviction tier: {conviction_tier}",
+            f"Setup class: {position.get('setup_class', '')}",
+            f"Convexity label: {position.get('convexity_label', '')}",
+            f"Research sizing profile: {research_sizing_profile}",
+            "Live canary sizing: tiny fixed cap; research sizing is not full-live enabled",
+            "",
             "USDC execution patience guard",
             "-----------------------------",
             "Guard: 5-minute symbol-aware USDT-signal -> USDC-execution patience guard",
@@ -783,7 +831,9 @@ def _exit_email(root: Path, roundtrip: dict[str, Any]) -> dict[str, Any]:
         hero = f"FLAT EXIT {_fmt_signed_quote(quote_delta, quote_asset)}"
         hero_kind = "entry"
     total_equity = roundtrip.get("estimated_total_equity_quote_after_exit", roundtrip.get("quote_balance_after_exit", ""))
-    subject = f"RTS LIVE CANARY EXIT {label}: {symbol} PnL { _fmt_signed_quote(quote_delta, quote_asset) } | Equity {_fmt_decimal(total_equity, f' {quote_asset}')}"
+    conviction_tier = str(roundtrip.get("conviction_tier") or "normal")
+    research_sizing_profile = str(roundtrip.get("research_sizing_profile") or "A+/Elite research sizing candidate; live canary remains tiny-capped")
+    subject = f"RTS LIVE CANARY EXIT {label} [{conviction_tier.upper()}]: {symbol} PnL { _fmt_signed_quote(quote_delta, quote_asset) } | Equity {_fmt_decimal(total_equity, f' {quote_asset}')}"
     html = _html_document(
         title=f"Exit closed: {symbol}",
         hero=f"{hero} | Total equity {_fmt_decimal(total_equity, f' {quote_asset}')}",
@@ -808,6 +858,16 @@ def _exit_email(root: Path, roundtrip: dict[str, Any]) -> dict[str, Any]:
                     ("Entry quote filled", _fmt_decimal(roundtrip["entry_quote_filled"], f" {quote_asset}")),
                     ("Exit quote filled", _fmt_decimal(roundtrip["exit_quote_filled"], f" {quote_asset}")),
                     ("Base delta after close", _fmt_decimal(roundtrip.get("base_delta", ""))),
+                ],
+            ),
+            (
+                "A+/Elite research sizing label",
+                [
+                    ("Conviction tier", conviction_tier),
+                    ("Setup class", str(roundtrip.get("setup_class", ""))),
+                    ("Convexity label", str(roundtrip.get("convexity_label", ""))),
+                    ("Research sizing profile", research_sizing_profile),
+                    ("Live canary sizing", "tiny fixed cap; research sizing is not full-live enabled"),
                 ],
             ),
             (
@@ -854,6 +914,14 @@ def _exit_email(root: Path, roundtrip: dict[str, Any]) -> dict[str, Any]:
             f"Entry quote filled: {_fmt_decimal(roundtrip['entry_quote_filled'], f' {quote_asset}')}",
             f"Exit quote filled: {_fmt_decimal(roundtrip['exit_quote_filled'], f' {quote_asset}')}",
             f"Base delta after close: {_fmt_decimal(roundtrip.get('base_delta', ''))}",
+            "",
+            "A+/Elite research sizing label",
+            "--------------------------------",
+            f"Conviction tier: {conviction_tier}",
+            f"Setup class: {roundtrip.get('setup_class', '')}",
+            f"Convexity label: {roundtrip.get('convexity_label', '')}",
+            f"Research sizing profile: {research_sizing_profile}",
+            "Live canary sizing: tiny fixed cap; research sizing is not full-live enabled",
             "",
             "USDC execution patience guard",
             "-----------------------------",
@@ -953,6 +1021,10 @@ def _maybe_exit_open_position(root: Path, client: BinanceLiveSpotClient, manifes
         "estimated_total_equity_quote_after_exit": quote_after + (base_after * price),
         "exit_reason": exit_reason,
         "result_label": "PROFIT" if quote_delta > 0 else "LOSS" if quote_delta < 0 else "FLAT",
+        "setup_class": position.get("setup_class", ""),
+        "convexity_label": position.get("convexity_label", ""),
+        "conviction_tier": position.get("conviction_tier", "normal"),
+        "research_sizing_profile": position.get("research_sizing_profile", ""),
         "execution_guard_classification": position.get("execution_guard_classification", ""),
         "execution_patience_attempts": position.get("execution_patience_attempts", ""),
         "execution_patience_delay_seconds": position.get("execution_patience_delay_seconds", ""),
@@ -1054,6 +1126,10 @@ def _submit_entry(root: Path, client: BinanceLiveSpotClient, manifest: dict[str,
         "entry_reference": candidate.get("entry_reference", ""),
         "stop_reference": candidate.get("stop_reference", ""),
         "target_reference": candidate.get("target_reference", ""),
+        "setup_class": candidate.get("setup_class", ""),
+        "convexity_label": candidate.get("convexity_label", ""),
+        "conviction_tier": candidate.get("conviction_tier", "normal"),
+        "research_sizing_profile": "a_plus_2p50_elite_3p00_total_5p00; live canary remains capped by RTS_LIVE_CANARY_MAX_ORDER_NOTIONAL_EUR",
         "base_balance_before_entry": base_before,
         "base_balance_after_entry": _asset_balance(after, rules.base_asset),
         "quote_balance_before_entry": quote_before,
