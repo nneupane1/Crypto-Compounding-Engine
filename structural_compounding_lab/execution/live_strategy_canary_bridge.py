@@ -53,10 +53,13 @@ FAILED = "BINANCE_LIVE_STRATEGY_CANARY_FAILED"
 
 REQUIRED_ENABLED_VALUE = "true"
 REQUIRED_CONFIRMATION = "YES_TINY_REAL_MONEY_STRATEGY_CANARY"
-REQUIRED_LOSS_ACK = "I_ACCEPT_MAX_25_EUR_LIVE_CANARY_BUDGET"
+REQUIRED_LOSS_ACK_VALUES = {
+    "I_ACCEPT_MAX_25_EUR_LIVE_CANARY_BUDGET",
+    "I_ACCEPT_MAX_100_EUR_MICRO_LIVE_BUDGET",
+}
 MAX_HARD_ACCOUNT_CAPITAL_EUR = Decimal("1000")
 MAX_HARD_TEST_BUDGET_EUR = Decimal("100")
-MAX_HARD_ORDER_NOTIONAL_EUR = Decimal("10")
+MAX_HARD_ORDER_NOTIONAL_EUR = Decimal("100")
 MAX_HARD_DAILY_LOSS_EUR = Decimal("25")
 MAX_OPEN_POSITIONS = 1
 
@@ -504,7 +507,7 @@ def _confirmations_present() -> bool:
     return (
         os.getenv("RTS_LIVE_CANARY_ENABLED", "").strip().lower() == REQUIRED_ENABLED_VALUE
         and os.getenv("RTS_LIVE_CANARY_CONFIRM", "").strip() == REQUIRED_CONFIRMATION
-        and os.getenv("RTS_LIVE_CANARY_I_UNDERSTAND_MAX_LOSS", "").strip() == REQUIRED_LOSS_ACK
+        and os.getenv("RTS_LIVE_CANARY_I_UNDERSTAND_MAX_LOSS", "").strip() in REQUIRED_LOSS_ACK_VALUES
     )
 
 
@@ -1080,6 +1083,13 @@ def _submit_entry(root: Path, client: BinanceLiveSpotClient, manifest: dict[str,
     before = client.account()
     quote_before = _asset_balance(before, rules.quote_asset)
     base_before = _asset_balance(before, rules.base_asset)
+    estimated_account_value_quote = quote_before + (base_before * price)
+    max_account = _parse_decimal(str(manifest["max_account_capital_eur"]), "100")
+    if estimated_account_value_quote > max_account:
+        raise BinanceLiveSpotSafetyError(
+            f"estimated_{rules.quote_asset}_account_value_exceeds_live_canary_cap:"
+            f"{decimal_to_plain(estimated_account_value_quote)}>{decimal_to_plain(max_account)}"
+        )
     if quote_before < estimated_notional:
         raise BinanceLiveSpotSafetyError(f"insufficient_{rules.quote_asset}_balance_for_live_canary")
     seed = f"{COURT_NAME}|ENTRY|{candidate['source_trade_id']}|{_now()}"

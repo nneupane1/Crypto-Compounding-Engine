@@ -13,8 +13,8 @@ The live canary proves this specific production path:
 2. the frozen long-only nine-symbol scanner writes a fresh signal into the
    decision ledger;
 3. the live canary reads only that fresh signal;
-4. it submits at most one tiny capped Spot buy;
-5. it later submits the matching tiny capped Spot sell when the frozen exit
+4. it submits at most one capped micro-live Spot buy;
+5. it later submits the matching capped micro-live Spot sell when the frozen exit
    reference is reached;
 6. it writes order/fill/roundtrip artifacts;
 7. it sends entry and exit emails.
@@ -32,10 +32,10 @@ It does not enable full strategy live trading.
 - No withdrawals.
 - No transfers.
 - Maximum one open canary position.
-- Default account cap: `€100`.
-- Default test budget: `€50`.
-- Default single-order notional cap: `€10`.
-- Default daily loss cap: `€10`.
+- Default account cap: `€150`.
+- Default test budget: `€100`.
+- Default single-order notional cap: `€95`.
+- Default daily loss cap: `€25`.
 - Dedicated Binance keys only: `BINANCE_LIVE_SMOKE_API_KEY` and
   `BINANCE_LIVE_SMOKE_API_SECRET`.
 - Generic keys and demo keys are rejected inside the container.
@@ -45,7 +45,7 @@ must be invoked explicitly.
 
 ## Required Binance key setup
 
-Use a dedicated Binance API key for the tiny live canary:
+Use a dedicated Binance API key for the micro-live canary:
 
 - enable Reading;
 - enable Spot trading;
@@ -74,23 +74,23 @@ Expected classifications:
 
 ## Execute once
 
-Run only after dry-run is clean and the operator intentionally accepts the tiny
-real-money canary budget.
+Run only after dry-run is clean and the operator intentionally accepts the 100 USDC
+micro-live canary budget.
 
 ```bash
 cd /opt/crypto-compounding-engine
 docker compose -f deploy/docker-compose.prod.yml --profile live-canary run --rm \
   -e RTS_LIVE_CANARY_ENABLED=true \
   -e RTS_LIVE_CANARY_CONFIRM=YES_TINY_REAL_MONEY_STRATEGY_CANARY \
-  -e RTS_LIVE_CANARY_I_UNDERSTAND_MAX_LOSS=I_ACCEPT_MAX_25_EUR_LIVE_CANARY_BUDGET \
+  -e RTS_LIVE_CANARY_I_UNDERSTAND_MAX_LOSS=I_ACCEPT_MAX_100_EUR_MICRO_LIVE_BUDGET \
   live-canary \
   python -m structural_compounding_lab.execution.live_strategy_canary_bridge --mode execute_once
 ```
 
 If there is no fresh eligible frozen signal, the command exits with no order.
-If a fresh signal exists, it may place one tiny capped Spot buy.
+If a fresh signal exists, it may place one capped micro-live Spot buy.
 If an open canary position exists, it checks the frozen target/stop reference
-and may place the matching tiny capped Spot sell.
+and may place the matching capped micro-live Spot sell.
 
 ## Quote balance requirement
 
@@ -105,8 +105,7 @@ USDC Spot pair for execution:
 `ADAUSDT -> ADAUSDC`, `BTCUSDT -> BTCUSDC`, etc.
 
 That means the live canary needs a small free USDC balance before it can execute
-strategy signals. A EUR balance alone is not enough. For a tiny canary test,
-convert only a small amount such as `€30–€100` equivalent to USDC.
+strategy signals. A EUR balance alone is not enough. For the current micro-live canary, keep only the intended small balance available, around `100 USDC`.
 
 ## Hetzner timer mode
 
@@ -115,7 +114,7 @@ The recommended production rehearsal runs both pieces on Hetzner:
 - Docker `runtime`: fetches public `1m` USDT-quoted candles, resamples
   `15m`/`1h`/`6h`, writes checkpoints, and records frozen shadow signals.
 - systemd `rts-live-canary-usdc.timer`: checks the local runtime ledger every
-  five minutes and may execute only a fresh tiny USDC canary order.
+  five minutes and may execute only a fresh capped micro-live USDC canary order.
 
 Install/update the timer:
 
@@ -156,13 +155,13 @@ Important files:
 
 ## Promotion rule
 
-Passing this canary proves only a tiny capped strategy-to-order bridge.
+Passing this canary proves only a capped micro-live strategy-to-order bridge.
 
 The promotion ladder remains:
 
 1. cloud runtime stable;
 2. demo/testnet execution stable;
 3. tiny real-money smoke passed;
-4. tiny live strategy canary stable;
+4. micro-live strategy canary stable;
 5. small live allocation;
 6. only later larger capital.

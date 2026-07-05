@@ -4,7 +4,7 @@ Production-grade, Dockerized crypto compounding runtime for Hetzner.
 
 This repository is the cleaned production extraction of the larger local research workspace. It is not the legacy Retail Trading System application. It is the operational Crypto Compounding Engine: public market data in, deterministic frozen signal logic, clear artifacts out, guarded Binance Spot execution only when explicitly enabled.
 
-Current status: guarded real-money canary is ready and running on Hetzner with tiny USDC caps. Full €25,000 deployment is not a switch; it is a gated promotion after the canary proves order lifecycle, state recovery, email clarity, and balance reconciliation.
+Current status: guarded 100 USDC micro-live canary is ready and running on Hetzner with capped USDC execution. Full €25,000 deployment is not a switch; it is a gated promotion after the canary proves order lifecycle, state recovery, email clarity, and balance reconciliation.
 
 ---
 
@@ -51,7 +51,7 @@ Current status: guarded real-money canary is ready and running on Hetzner with t
 | Short selling | disabled for live execution |
 | Margin/futures | disabled |
 | Withdrawals/transfers | disabled |
-| Current real-money mode | tiny guarded canary only |
+| Current real-money mode | guarded 100 USDC micro-live canary only |
 | Full €25k live mode | not enabled yet |
 
 The main production idea is simple:
@@ -122,7 +122,7 @@ flowchart TD
     H --> I[6H context overlay court]
     I --> J[USDC quote migration and overlap bridge]
     J --> K[USDT signal to USDC Spot execution freeze]
-    K --> L[Hetzner Docker runtime and tiny live canary]
+    K --> L[Hetzner Docker runtime and micro-live canary]
 ```
 
 The important lesson from this path: the early huge single-asset and uncapped
@@ -327,7 +327,7 @@ Largest historical sizing examples:
 
 The notional figure is a research estimate derived from risk divided by stop
 distance. It is not the current live canary amount. Current live canary remains
-tiny-capped by environment controls, currently `6 USDC` per order on Hetzner.
+tiny-capped by environment controls, currently up to `95 USDC` per order on Hetzner, with one open position and a `25 USDC` daily closed-loss cap.
 
 Production interpretation:
 
@@ -509,7 +509,7 @@ There are two different streams. They are deliberately named differently.
 | Stream | Meaning | Sends when |
 | --- | --- | --- |
 | `RTS LIVE SIGNAL SCHEDULER` | USDT walk-forward signal event | frozen signal entry/exit row appears |
-| `RTS LIVE CANARY` | tiny USDC real-money order event | Binance buy/sell fills |
+| `RTS LIVE CANARY` | capped micro-live USDC real-money order event | Binance buy/sell fills |
 
 Signal emails are not Binance orders.
 
@@ -534,7 +534,7 @@ Both now use the same clean layout:
 
 ## What “ready to trade real money” means here
 
-This system is ready for guarded tiny real-money validation.
+This system is ready for guarded 100 USDC micro-live validation.
 
 It is not yet approved for full €25,000 autonomous live deployment.
 
@@ -545,8 +545,8 @@ The current real-money readiness means:
 - withdrawals are disabled;
 - generic/demo keys are rejected;
 - USDC balance is available;
-- one tiny buy/sell smoke already proved the path;
-- the canary can place at most one tiny order when a fresh frozen signal appears;
+- one small buy/sell smoke already proved the path;
+- the canary can place at most one capped micro-live order when a fresh frozen signal appears;
 - max order is capped;
 - max daily loss is capped;
 - artifacts and emails are written.
@@ -568,8 +568,8 @@ flowchart TD
 
 | Stage | Capital | Purpose |
 | --- | ---: | --- |
-| Tiny smoke | ~`6 USDC` order | prove buy/sell plumbing |
-| Canary | tiny capped orders | prove fresh signal → order → exit lifecycle |
+| Tiny smoke | small single order | prove buy/sell plumbing |
+| Micro-live canary | up to `95 USDC` per order | prove fresh signal → order → exit lifecycle on the current small account |
 | Small live | `€100–€250` | validate real-world fills and emails |
 | Controlled live | `€1,000` | validate repeated live behavior |
 | Intermediate live | `€5,000` | validate scaling and slippage |
@@ -583,8 +583,8 @@ flowchart TD
 | --- | --- |
 | Full live trading | disabled |
 | Paper validation flag | `paper_validation_ready=false` |
-| Live strategy order path | disabled except explicit tiny canary |
-| Mainnet tiny canary path | guarded and capped |
+| Live strategy order path | disabled except explicit guarded micro-live canary |
+| Mainnet micro-live canary path | guarded and capped |
 | Short-selling | disabled |
 | Margin | disabled |
 | Futures | disabled |
@@ -595,8 +595,8 @@ flowchart TD
 | Historical backlog replay | blocked by default |
 | Duplicate order prevention | state/ledger based |
 | Max open positions in canary | `1` |
-| Current canary max order | `6 USDC` |
-| Current canary daily loss cap | `3 USDC` |
+| Current canary max order | `95 USDC` |
+| Current canary daily loss cap | `25 USDC` |
 | USDC execution patience | `5m`, only for temporary execution-quality blocks |
 
 ---
@@ -777,7 +777,7 @@ http://127.0.0.1:8000/health
 | --- | --- |
 | `docs/HETZNER_DOCKER_DEPLOYMENT.md` | server setup and Docker operations |
 | `docs/LIVE_TINY_SMOKE_RUNBOOK.md` | one-off tiny buy/sell plumbing test |
-| `docs/LIVE_STRATEGY_CANARY_RUNBOOK.md` | fresh frozen signal → tiny USDC execution test |
+| `docs/LIVE_STRATEGY_CANARY_RUNBOOK.md` | fresh frozen signal → capped micro-live USDC execution test |
 | `docs/PRODUCTION_MIGRATION_MANIFEST.md` | what was included/excluded from production |
 | `docs/REPOSITORY_STRUCTURE_AUDIT.md` | why each major folder remains and what must stay excluded |
 
@@ -792,9 +792,9 @@ The current production architecture is coherent:
 - The bridge was researched and frozen as a candidate.
 - The 5-minute USDC execution patience guard is locked for live canary routing.
 - The Hetzner Docker runtime is separated from the local research machine.
-- The canary is tiny, capped, and real-money guarded.
+- The canary is micro-live, capped, and real-money guarded.
 - Emails and artifacts now clearly separate signal events from Binance order events.
-- The system is ready for real-money canary validation, not full €25k deployment yet.
+- The system is ready for 100 USDC micro-live validation, not full €25k deployment yet.
 
 The “brilliant” part is not that the bot can press buy. Any script can press buy. The serious part is that this one has a chain of evidence, a frozen signal engine, a quote-route bridge, hard caps, audit artifacts, restart state, and a promotion ladder.
 
