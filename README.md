@@ -8,6 +8,32 @@ Current status: guarded real-money canary is ready and running on Hetzner with t
 
 ---
 
+## Table of contents
+
+| Section | What it explains |
+| --- | --- |
+| [Executive verdict](#executive-verdict) | The current operating answer in one table: cloud, universe, USDT/USDC route, safety posture, and live mode. |
+| [Current frozen production candidate](#current-frozen-production-candidate) | The exact frozen candidate currently deployed: 9 symbols, 1m/15m/1H/6H context, long-only Spot execution, and research numbers. |
+| [Historical evidence before deployment](#historical-evidence-before-deployment) | The full research path before Hetzner: single-asset transfer, multi-asset scanner, capped compounding, BTC inclusion, 6H overlay, USDC bridge, and final freeze. |
+| [Per-asset full-history transfer records](#per-asset-full-history-transfer-records) | What each asset did independently under the frozen transfer court, including research and sealed-holdout net-cost equity. |
+| [Multi-asset engine evolution](#multi-asset-engine-evolution) | How the system moved from isolated assets to a realistic capped multi-asset allocator. |
+| [USDT signal and USDC execution evidence](#usdt-signal-and-usdc-execution-evidence) | Why USDT remains the signal source, why USDC is the live execution route, and which numbers justify the bridge. |
+| [Why USDT signals and USDC execution](#why-usdt-signals-and-usdc-execution) | The conceptual reason for separating signal tape from execution quote. |
+| [System flow](#system-flow) | Mermaid chart of live data → frozen signal → guarded USDC canary execution. |
+| [Hetzner production layout](#hetzner-production-layout) | Docker services, systemd timer, and persistent volumes. |
+| [Runtime artifact map](#runtime-artifact-map) | Where ledgers, status files, candle snapshots, order fills, roundtrips, and email artifacts are written. |
+| [Email streams](#email-streams) | Difference between signal emails and real Binance canary order emails. |
+| [What “ready to trade real money” means here](#what-ready-to-trade-real-money-means-here) | What is approved now, what is still gated, and why full €25k is not enabled yet. |
+| [Promotion ladder](#promotion-ladder) | The staged path from tiny smoke to canary to small capital to full capital. |
+| [Hard safety contract](#hard-safety-contract) | The non-negotiable disabled paths and live risk caps. |
+| [Repository hygiene status](#repository-hygiene-status) | Why some research-looking modules remain and what generated clutter is excluded. |
+| [Folder structure](#folder-structure) | Production repo layout and purpose of each main folder. |
+| [Hetzner commands](#hetzner-commands) | Basic server commands for runtime, logs, and live canary status. |
+| [Runbooks](#runbooks) | Supporting operational documents. |
+| [Final conclusion](#final-conclusion) | The final engineering interpretation of the project state. |
+
+---
+
 ## Executive verdict
 
 | Area | Current answer |
@@ -56,6 +82,151 @@ That split is not a hack. It is the useful engineering compromise: keep the best
 The important number is not a fantasy “gross moon number”. The relevant production-candidate number is the guarded, cost-aware, tax-reserve-aware USDT-signal → USDC-execution result around `€5.33M–€5.39M` from a `€25k` starting anchor in research.
 
 That is why this version is the current production candidate.
+
+---
+
+## Historical evidence before deployment
+
+Before this repository was separated and deployed to Hetzner, the engine went
+through a long sequence of research-only courts. The purpose was not to make a
+pretty equity curve. The purpose was to find the version that survived:
+
+- full-history replay;
+- sealed six-month holdout;
+- net execution costs;
+- yearly German tax-reserve modeling;
+- no short-selling for live Spot execution;
+- capped compounding;
+- symbol-level capacity limits;
+- USDT signal to USDC execution conversion;
+- cloud runtime and tiny real-money canary safety gates.
+
+The research evolution looked like this:
+
+```mermaid
+flowchart TD
+    A[Single BTC research engine] --> B[EUR25k sealed 6-month BTC court]
+    B --> C[Multi-asset frozen transfer court]
+    C --> D[Multi-asset scanner replay]
+    D --> E[Capped compounding and yearly tax reserve]
+    E --> F[Reduced symbol caps and exact-fill realism]
+    F --> G[Earned parallel slot allocator]
+    G --> H[BTC added to make 9-symbol universe]
+    H --> I[6H context overlay court]
+    I --> J[USDC quote migration and overlap bridge]
+    J --> K[USDT signal to USDC Spot execution freeze]
+    K --> L[Hetzner Docker runtime and tiny live canary]
+```
+
+The important lesson from this path: the early huge single-asset and uncapped
+multi-asset numbers were treated as evidence of edge, not as production cash
+forecasts. The final production candidate is the capped, long-only,
+cost-aware, tax-reserve-aware, USDC-executable bridge.
+
+---
+
+## Per-asset full-history transfer records
+
+These were the first major multi-asset transfer results. Each asset was tested
+independently with the frozen transfer logic, normal net-cost model, and a
+fresh sealed holdout. These numbers explain why the project moved beyond a
+single BTC-only engine.
+
+Source artifact:
+
+```text
+structural_compounding_lab/output/multi_asset_frozen_transfer_court_001/
+multi_asset_frozen_transfer_summary.json
+```
+
+| Symbol | Research net-cost equity | Research trades | Research PF | Research win rate | Sealed-holdout net-cost equity | Holdout trades | Holdout PF | Holdout win rate |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `ETHUSDT` | `€4,119,551.82` | `458` | `12.26` | `76.64%` | `€31,626.86` | `37` | `10.63` | `78.38%` |
+| `BNBUSDT` | `€9,375,952.90` | `526` | `11.74` | `77.57%` | `€36,788.82` | `37` | `19.87` | `78.38%` |
+| `XRPUSDT` | `€6,284,678.64` | `491` | `16.77` | `81.06%` | `€32,088.11` | `43` | `4.59` | `67.44%` |
+| `ADAUSDT` | `€46,269,286.92` | `580` | `22.95` | `86.03%` | `€30,420.50` | `27` | `9.06` | `77.78%` |
+| `LINKUSDT` | `€11,063,301.24` | `501` | `15.76` | `80.84%` | `€39,036.98` | `43` | `17.82` | `79.07%` |
+| `DOGEUSDT` | `€4,218,881.40` | `396` | `19.14` | `83.33%` | `€38,632.56` | `50` | `17.64` | `80.00%` |
+| `SOLUSDT` | `€2,251,905.22` | `393` | `16.68` | `81.17%` | `€33,549.62` | `32` | `13.64` | `81.25%` |
+| `AVAXUSDT` | `€4,848,859.05` | `416` | `16.91` | `79.57%` | `€33,781.08` | `43` | `6.20` | `74.42%` |
+
+Portfolio-level transfer view:
+
+| Metric | Value |
+| --- | ---: |
+| Assets validated | `8 / 8` |
+| Average research ending equity | `€11,054,052.15` |
+| Median research ending equity | `€5,566,768.84` |
+| Average sealed-holdout ending equity | `€34,490.57` |
+| Median sealed-holdout ending equity | `€33,665.35` |
+| Best holdout asset | `LINKUSDT` |
+| Worst holdout asset | `ADAUSDT` |
+
+Interpretation: ADA’s full-history number was huge, but its sealed holdout was
+not the strongest. That is why the system did not simply “freeze ADA”. The
+better engineering move was a multi-asset scanner and allocator.
+
+---
+
+## Multi-asset engine evolution
+
+The multi-asset engine became the production candidate only after the raw
+scanner result was forced through increasingly realistic constraints.
+
+| Court / stage | What changed | Research result | Sealed holdout | Classification |
+| --- | --- | ---: | ---: | --- |
+| Scanner replay | Fixed research-ranked scanner, one active trade, no live path | raw uncapped result demoted as non-cash forecast | `€134,917.30` | `MULTI_ASSET_SCANNER_REPLAY_VALIDATED_RESEARCH_ONLY` |
+| Capital-cap realism | Added active-cap limit, profit vault, 15 bps cost, yearly tax reserve | `€4,391,717.30` | `€134,917.30` no-tax holdout diagnostic | `MULTI_ASSET_CAPITAL_CAP_REALISM_VALIDATED_RESEARCH_ONLY` |
+| Reduced exact-fill caps | Added symbol-level fill-calibrated caps | `€5,017,411.26` | `€119,978.81` no-tax holdout diagnostic | `MULTI_SYMBOL_REDUCED_CAP_GEAR_LADDER_RESTATEMENT_PASSED_RESEARCH_ONLY` |
+| Earned parallel slots, 8 symbols | Slots unlock from closed equity milestones only | `€6,796,470.63` | `€76,810.37` | `MULTI_ASSET_EARNED_PARALLEL_SLOT_FREEZE_CANDIDATE_RESEARCH_ONLY` |
+| BTC inclusion, 9 symbols | Added BTC as a separate court, not by mutating the 8-symbol result | `€7,973,114.87` | `€87,951.93` | `MULTI_ASSET_9_SYMBOL_BTC_INCLUSION_FREEZE_CANDIDATE_RESEARCH_ONLY` |
+| 6H context overlay | Tested 6H context as an overlay, not a native 6H execution rewrite | `€8,172,676.50` | `€90,209.37` | `MULTI_ASSET_6H_CONTEXT_OVERLAY_FREEZE_CANDIDATE_RESEARCH_ONLY` |
+| USDT signal → USDC execution bridge | Preserved USDT signal tape, mapped live execution to USDC Spot pairs | `€5,333,441.95` baseline bridge / `€5,393,682.06` frozen 2% allocator | `€63,021.19` baseline bridge / `€110,226.24` frozen 2% allocator | `USDT_SIGNAL_USDC_EXECUTION_2PCT_GUARDED_CANDIDATE_FROZEN_RESEARCH_ONLY` |
+
+The progression matters. The engine did not jump from “large backtest” to
+“trade €25k live”. It went through constraints that made the numbers smaller
+and more credible:
+
+- capped active trading capital;
+- profit vault;
+- yearly tax reserve;
+- symbol capacity caps;
+- closed-equity-only slot unlocks;
+- no floating-PnL slot unlocks;
+- long-only Spot-compatible execution;
+- USDC execution bridge;
+- tiny real-money canary before full capital.
+
+---
+
+## USDT signal and USDC execution evidence
+
+The final production route is:
+
+```text
+USDT signal source -> frozen long-only 9-symbol scanner -> USDC Spot execution
+```
+
+This exists because Binance/EU account access made USDC the practical Spot
+execution route, while USDT remained the better historical signal tape.
+
+| Evidence item | Value |
+| --- | --- |
+| Canonical USDT 9-symbol research after cost + yearly tax reserve | `€7,973,114.87` |
+| Canonical USDT 9-symbol sealed holdout after cost + yearly tax reserve | `€87,951.93` |
+| USDT-signal → USDC-execution baseline bridge research | `€5,333,441.95` |
+| USDT-signal → USDC-execution baseline bridge holdout | `€63,021.19` |
+| Frozen 2% USDC allocator research | `€5,393,682.06` |
+| Frozen 2% USDC allocator holdout | `€110,226.24` |
+| Frozen allocator variant | `early_two_1pct_each_total_2pct` |
+| Max slots from start | `2` |
+| Max risk per trade | `1%` |
+| Max total open risk from start | `2%` |
+| Frozen classification | `USDT_SIGNAL_USDC_EXECUTION_2PCT_GUARDED_CANDIDATE_FROZEN_RESEARCH_ONLY` |
+
+That is the current “ready for real-money canary” conclusion: not because the
+system is allowed to trade full capital, but because the route from signal to
+USDC Spot execution has evidence and hard safety gates.
 
 ---
 
