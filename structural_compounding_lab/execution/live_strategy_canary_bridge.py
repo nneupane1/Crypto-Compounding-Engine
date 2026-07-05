@@ -318,11 +318,23 @@ def _fmt_signed_quote(value: Any, asset: str = "USDC") -> str:
 
 
 def _html_document(*, title: str, hero: str, hero_kind: str, sections: list[tuple[str, list[tuple[str, Any]]]], footer: str) -> str:
-    color = "#11b981" if hero_kind == "profit" else "#f59e0b" if hero_kind == "entry" else "#ef4444"
+    color = "#10b981" if hero_kind == "profit" else "#f59e0b" if hero_kind == "entry" else "#ef4444"
+    accent_bg = "rgba(16,185,129,.16)" if hero_kind == "profit" else "rgba(245,158,11,.16)" if hero_kind == "entry" else "rgba(239,68,68,.16)"
+    emoji = "🎯" if hero_kind == "profit" else "⚡" if hero_kind == "entry" else "🛡️"
+    status_label = "PROFIT EXIT" if hero_kind == "profit" else "LIVE CANARY ENTRY" if hero_kind == "entry" else "LOSS CONTROL"
+    first_rows = sections[0][1] if sections else []
+    kpi_html = []
+    for key, value in first_rows[:4]:
+        kpi_html.append(
+            "<td class=\"metric\">"
+            f"<div class=\"metricLabel\">{escape(str(key))}</div>"
+            f"<div class=\"metricValue\">{escape(str(value))}</div>"
+            "</td>"
+        )
     rows: list[str] = []
     for heading, items in sections:
-        rows.append(f"<h2>{escape(heading)}</h2>")
-        rows.append("<table>")
+        rows.append(f"<div class=\"section\"><h2>{escape(heading)}</h2>")
+        rows.append("<table class=\"dataTable\">")
         for key, value in items:
             rows.append(
                 "<tr>"
@@ -330,32 +342,54 @@ def _html_document(*, title: str, hero: str, hero_kind: str, sections: list[tupl
                 f"<td>{escape(str(value))}</td>"
                 "</tr>"
             )
-        rows.append("</table>")
+        rows.append("</table></div>")
     return f"""<!doctype html>
 <html>
-  <body style="margin:0;background:#07111f;color:#e5eef9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
-    <div style="max-width:760px;margin:0 auto;padding:28px;">
-      <div style="border:1px solid rgba(148,163,184,.35);border-radius:22px;background:linear-gradient(135deg,#07111f,#0b2532 55%,#121827);box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden;">
-        <div style="padding:26px 30px;border-bottom:1px solid rgba(148,163,184,.25);">
-          <div style="letter-spacing:.16em;text-transform:uppercase;color:#93c5fd;font-size:12px;font-weight:800;">RTS Live Canary</div>
-          <h1 style="font-size:30px;line-height:1.15;margin:10px 0 0;color:#ffffff;">{escape(title)}</h1>
+  <body style="margin:0;background:#050b16;color:#e5eef9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
+    <div class="stage" style="max-width:860px;margin:0 auto;padding:28px;">
+      <div class="shell">
+        <div class="topbar">
+          <div class="eyebrow">RTS Live Canary · Binance Spot · USDC guarded execution</div>
+          <h1>{escape(title)}</h1>
+          <div class="subtitle">Tiny real-money canary only. This is not full capital deployment.</div>
         </div>
-        <div style="padding:28px 30px;">
-          <div style="border-radius:18px;border:1px solid {color};background:rgba(255,255,255,.06);padding:22px;margin-bottom:24px;">
-            <div style="font-size:14px;letter-spacing:.12em;text-transform:uppercase;color:{color};font-weight:900;">Main result</div>
-            <div style="font-size:34px;line-height:1.15;color:#ffffff;font-weight:900;margin-top:8px;">{escape(hero)}</div>
+        <div class="content">
+          <div class="hero" style="border-color:{color};background:linear-gradient(135deg,{accent_bg},rgba(15,23,42,.88));">
+            <div class="orb" style="background:{color};box-shadow:0 0 34px {color};">{emoji}</div>
+            <div>
+              <div class="heroLabel" style="color:{color};">{status_label}</div>
+              <div class="heroText">{escape(hero)}</div>
+            </div>
           </div>
+          <table class="metricGrid"><tr>{''.join(kpi_html)}</tr></table>
           {''.join(rows)}
-          <p style="margin-top:24px;color:#a8b3c7;font-size:13px;line-height:1.6;">{escape(footer)}</p>
+          <div class="footerBox">{escape(footer)}</div>
         </div>
       </div>
     </div>
     <style>
-      table {{ width:100%; border-collapse:collapse; margin:10px 0 22px; background:rgba(15,23,42,.72); border-radius:14px; overflow:hidden; }}
+      @keyframes pulseGlow {{ 0% {{ transform:scale(1); opacity:.92; }} 50% {{ transform:scale(1.04); opacity:1; }} 100% {{ transform:scale(1); opacity:.92; }} }}
+      .shell {{ border:1px solid rgba(148,163,184,.38); border-radius:26px; background:radial-gradient(circle at 20% 0%,rgba(34,211,238,.22),transparent 34%),radial-gradient(circle at 100% 0%,rgba(168,85,247,.20),transparent 30%),linear-gradient(135deg,#07111f,#0b2532 54%,#111827); box-shadow:0 24px 70px rgba(0,0,0,.48); overflow:hidden; }}
+      .topbar {{ padding:28px 32px; border-bottom:1px solid rgba(148,163,184,.24); background:rgba(255,255,255,.035); }}
+      .eyebrow {{ letter-spacing:.18em; text-transform:uppercase; color:#93c5fd; font-size:12px; font-weight:900; }}
+      h1 {{ font-size:31px; line-height:1.15; margin:10px 0 8px; color:#ffffff; }}
+      .subtitle {{ color:#a8b3c7; font-size:14px; font-weight:700; }}
+      .content {{ padding:28px 32px 32px; }}
+      .hero {{ border:1px solid; border-radius:22px; padding:22px; margin-bottom:18px; display:flex; gap:16px; align-items:center; box-shadow:inset 0 0 42px rgba(255,255,255,.035); }}
+      .orb {{ width:54px; height:54px; border-radius:18px; display:inline-flex; align-items:center; justify-content:center; font-size:26px; animation:pulseGlow 2.8s ease-in-out infinite; }}
+      .heroLabel {{ font-size:13px; letter-spacing:.14em; text-transform:uppercase; font-weight:950; }}
+      .heroText {{ font-size:32px; line-height:1.14; color:#ffffff; font-weight:950; margin-top:6px; }}
+      .metricGrid {{ width:100%; border-collapse:separate; border-spacing:10px; margin:0 0 18px; }}
+      .metric {{ width:25%; padding:14px; border:1px solid rgba(125,211,252,.24); border-radius:16px; background:linear-gradient(135deg,rgba(14,165,233,.12),rgba(15,23,42,.78)); vertical-align:top; }}
+      .metricLabel {{ color:#93a4b8; font-size:11px; letter-spacing:.12em; text-transform:uppercase; font-weight:900; }}
+      .metricValue {{ color:#f8fafc; font-size:16px; line-height:1.25; font-weight:950; margin-top:7px; }}
+      .section {{ border:1px solid rgba(148,163,184,.20); border-radius:18px; padding:14px; margin:16px 0; background:rgba(2,6,23,.34); }}
+      .dataTable {{ width:100%; border-collapse:collapse; background:rgba(15,23,42,.72); border-radius:14px; overflow:hidden; }}
       th,td {{ padding:12px 14px; border-bottom:1px solid rgba(148,163,184,.18); text-align:left; vertical-align:top; }}
-      th {{ width:42%; color:#93a4b8; font-size:12px; text-transform:uppercase; letter-spacing:.08em; }}
-      td {{ color:#f8fafc; font-size:15px; font-weight:700; }}
-      h2 {{ color:#e0f2fe; font-size:18px; margin:20px 0 8px; }}
+      th {{ width:40%; color:#93a4b8; font-size:12px; text-transform:uppercase; letter-spacing:.08em; }}
+      td {{ color:#f8fafc; font-size:15px; font-weight:800; }}
+      h2 {{ color:#e0f2fe; font-size:18px; margin:0 0 10px; }}
+      .footerBox {{ margin-top:20px; color:#cbd5e1; font-size:13px; line-height:1.6; border:1px solid rgba(148,163,184,.18); border-radius:16px; padding:14px; background:rgba(15,23,42,.55); }}
     </style>
   </body>
 </html>
