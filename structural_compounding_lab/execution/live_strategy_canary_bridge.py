@@ -67,6 +67,13 @@ MAX_HARD_ORDER_NOTIONAL_EUR = Decimal("100")
 MAX_HARD_DAILY_LOSS_EUR = Decimal("25")
 MAX_OPEN_POSITIONS = 2
 DEFAULT_MAX_SIGNAL_AGE_SECONDS = 7200
+A_PLUS_RESEARCH_PROFILE_ID = "a_plus_2p50_elite_3p00_total_5p00"
+A_PLUS_RESEARCH_REFERENCE_CAPITAL_EUR = Decimal("25000")
+CONVICTION_RISK_PCT = {
+    "normal": Decimal("0.01"),
+    "a_plus": Decimal("0.025"),
+    "elite": Decimal("0.03"),
+}
 
 FORBIDDEN_ENV_NAMES = {
     "BINANCE_API_KEY",
@@ -290,6 +297,49 @@ def _conviction_tier(setup_class: str, convexity_label: str) -> str:
     return "normal"
 
 
+def _conviction_risk_pct(conviction_tier: str) -> Decimal:
+    return CONVICTION_RISK_PCT.get(str(conviction_tier or "normal").lower(), CONVICTION_RISK_PCT["normal"])
+
+
+def _risk_based_canary_sizing(
+    *,
+    candidate: dict[str, Any],
+    estimated_account_value_quote: Decimal,
+    max_order_config: Decimal,
+    remaining_budget: Decimal,
+) -> dict[str, Any]:
+    hard_cap = min(max_order_config, remaining_budget)
+    conviction_tier = str(candidate.get("conviction_tier") or "normal").lower()
+    risk_pct = _conviction_risk_pct(conviction_tier)
+    risk_amount = estimated_account_value_quote * risk_pct
+    entry_reference = _parse_decimal(str(candidate.get("entry_reference", "")), "0")
+    stop_reference = _parse_decimal(str(candidate.get("stop_reference", "")), "0")
+    stop_distance = abs(entry_reference - stop_reference)
+    if entry_reference <= 0 or stop_distance <= 0 or hard_cap <= 0:
+        target_notional = hard_cap
+        stop_distance_pct = Decimal("0")
+        fallback_reason = "missing_or_invalid_entry_stop_reference"
+    else:
+        stop_distance_pct = stop_distance / entry_reference
+        target_notional = risk_amount / stop_distance_pct
+        fallback_reason = ""
+    order_notional = min(target_notional, hard_cap)
+    return {
+        "research_sizing_profile": A_PLUS_RESEARCH_PROFILE_ID,
+        "research_reference_capital_eur": A_PLUS_RESEARCH_REFERENCE_CAPITAL_EUR,
+        "conviction_tier": conviction_tier,
+        "conviction_risk_pct": risk_pct,
+        "live_account_equity_quote_before_entry": estimated_account_value_quote,
+        "live_risk_amount_quote": risk_amount,
+        "stop_distance_pct": stop_distance_pct,
+        "conviction_target_notional_quote": target_notional,
+        "hard_cap_notional_quote": hard_cap,
+        "hard_cap_applied": order_notional < target_notional,
+        "order_notional_quote": order_notional,
+        "sizing_fallback_reason": fallback_reason,
+    }
+
+
 def _activation_timestamp(root: Path, source_rows: list[dict[str, str]], allow_backlog: bool) -> datetime | None:
     if allow_backlog:
         return None
@@ -380,6 +430,16 @@ def _roundtrip_fieldnames() -> list[str]:
         "convexity_label",
         "conviction_tier",
         "research_sizing_profile",
+        "research_reference_capital_eur",
+        "conviction_risk_pct",
+        "live_account_equity_quote_before_entry",
+        "live_risk_amount_quote",
+        "stop_distance_pct",
+        "conviction_target_notional_quote",
+        "hard_cap_notional_quote",
+        "hard_cap_applied",
+        "actual_order_notional_quote",
+        "sizing_fallback_reason",
         "execution_guard_classification",
         "execution_patience_attempts",
         "execution_patience_delay_seconds",
@@ -800,6 +860,9 @@ def _entry_email(root: Path, position: dict[str, Any]) -> dict[str, Any]:
     patience_delay = position.get("execution_patience_delay_seconds", "")
     conviction_tier = str(position.get("conviction_tier") or "normal")
     research_sizing_profile = str(position.get("research_sizing_profile") or "A+/Elite research sizing candidate; live canary remains micro-capped")
+    conviction_risk_pct = _parse_decimal(str(position.get("conviction_risk_pct", "")), "0")
+    stop_distance_pct = _parse_decimal(str(position.get("stop_distance_pct", "")), "0")
+    hard_cap_applied = str(position.get("hard_cap_applied", "")).lower() == "true" or position.get("hard_cap_applied") is True
     subject = (
         f"RTS LIVE CANARY ENTRY [{conviction_tier.upper()}]: {source_symbol} -> "
         f"{execution_symbol} BUY {quote_filled} | Equity {_fmt_decimal(total_equity, f' {quote_asset}')}"
@@ -829,7 +892,15 @@ def _entry_email(root: Path, position: dict[str, Any]) -> dict[str, Any]:
                     ("Setup class", position.get("setup_class", "")),
                     ("Convexity label", position.get("convexity_label", "")),
                     ("Research sizing profile", research_sizing_profile),
-                    ("Live canary sizing", "micro-live two-slot cap; research sizing is not full-live enabled"),
+                    ("Research reference capital", _fmt_decimal(position.get("research_reference_capital_eur", ""), " EUR")),
+                    ("Conviction risk", _fmt_decimal(conviction_risk_pct * Decimal("100"), "%")),
+                    ("Live account equity before entry", _fmt_decimal(position.get("live_account_equity_quote_before_entry", ""), f" {quote_asset}")),
+                    ("Live risk amount", _fmt_decimal(position.get("live_risk_amount_quote", ""), f" {quote_asset}")),
+                    ("Stop distance", _fmt_decimal(stop_distance_pct * Decimal("100"), "%")),
+                    ("Conviction target notional", _fmt_decimal(position.get("conviction_target_notional_quote", ""), f" {quote_asset}")),
+                    ("Hard cap applied", "yes" if hard_cap_applied else "no"),
+                    ("Actual order notional", _fmt_decimal(position.get("actual_order_notional_quote", position.get("entry_quote_filled", "")), f" {quote_asset}")),
+                    ("Live canary sizing", "A+/Elite risk sizing scaled to canary equity, then clamped by tiny live caps"),
                 ],
             ),
             (
@@ -890,7 +961,15 @@ def _entry_email(root: Path, position: dict[str, Any]) -> dict[str, Any]:
             f"Setup class: {position.get('setup_class', '')}",
             f"Convexity label: {position.get('convexity_label', '')}",
             f"Research sizing profile: {research_sizing_profile}",
-            "Live canary sizing: micro-live two-slot cap; research sizing is not full-live enabled",
+            f"Research reference capital: {_fmt_decimal(position.get('research_reference_capital_eur', ''), ' EUR')}",
+            f"Conviction risk: {_fmt_decimal(conviction_risk_pct * Decimal('100'), '%')}",
+            f"Live account equity before entry: {_fmt_decimal(position.get('live_account_equity_quote_before_entry', ''), f' {quote_asset}')}",
+            f"Live risk amount: {_fmt_decimal(position.get('live_risk_amount_quote', ''), f' {quote_asset}')}",
+            f"Stop distance: {_fmt_decimal(stop_distance_pct * Decimal('100'), '%')}",
+            f"Conviction target notional: {_fmt_decimal(position.get('conviction_target_notional_quote', ''), f' {quote_asset}')}",
+            f"Hard cap applied: {'yes' if hard_cap_applied else 'no'}",
+            f"Actual order notional: {_fmt_decimal(position.get('actual_order_notional_quote', position.get('entry_quote_filled', '')), f' {quote_asset}')}",
+            "Live canary sizing: A+/Elite risk sizing scaled to canary equity, then clamped by tiny live caps",
             "",
             "USDC execution patience guard",
             "-----------------------------",
@@ -937,6 +1016,9 @@ def _exit_email(root: Path, roundtrip: dict[str, Any]) -> dict[str, Any]:
     total_equity = roundtrip.get("estimated_total_equity_quote_after_exit", roundtrip.get("quote_balance_after_exit", ""))
     conviction_tier = str(roundtrip.get("conviction_tier") or "normal")
     research_sizing_profile = str(roundtrip.get("research_sizing_profile") or "A+/Elite research sizing candidate; live canary remains micro-capped")
+    conviction_risk_pct = _parse_decimal(str(roundtrip.get("conviction_risk_pct", "")), "0")
+    stop_distance_pct = _parse_decimal(str(roundtrip.get("stop_distance_pct", "")), "0")
+    hard_cap_applied = str(roundtrip.get("hard_cap_applied", "")).lower() == "true" or roundtrip.get("hard_cap_applied") is True
     subject = f"RTS LIVE CANARY EXIT {label} [{conviction_tier.upper()}]: {symbol} PnL { _fmt_signed_quote(quote_delta, quote_asset) } | Equity {_fmt_decimal(total_equity, f' {quote_asset}')}"
     html = _html_document(
         title=f"Exit closed: {symbol}",
@@ -971,7 +1053,15 @@ def _exit_email(root: Path, roundtrip: dict[str, Any]) -> dict[str, Any]:
                     ("Setup class", str(roundtrip.get("setup_class", ""))),
                     ("Convexity label", str(roundtrip.get("convexity_label", ""))),
                     ("Research sizing profile", research_sizing_profile),
-                    ("Live canary sizing", "micro-live two-slot cap; research sizing is not full-live enabled"),
+                    ("Research reference capital", _fmt_decimal(roundtrip.get("research_reference_capital_eur", ""), " EUR")),
+                    ("Conviction risk", _fmt_decimal(conviction_risk_pct * Decimal("100"), "%")),
+                    ("Live account equity before entry", _fmt_decimal(roundtrip.get("live_account_equity_quote_before_entry", ""), f" {quote_asset}")),
+                    ("Live risk amount", _fmt_decimal(roundtrip.get("live_risk_amount_quote", ""), f" {quote_asset}")),
+                    ("Stop distance", _fmt_decimal(stop_distance_pct * Decimal("100"), "%")),
+                    ("Conviction target notional", _fmt_decimal(roundtrip.get("conviction_target_notional_quote", ""), f" {quote_asset}")),
+                    ("Hard cap applied", "yes" if hard_cap_applied else "no"),
+                    ("Actual entry notional", _fmt_decimal(roundtrip.get("actual_order_notional_quote", roundtrip.get("entry_quote_filled", "")), f" {quote_asset}")),
+                    ("Live canary sizing", "A+/Elite risk sizing scaled to canary equity, then clamped by tiny live caps"),
                 ],
             ),
             (
@@ -1025,7 +1115,15 @@ def _exit_email(root: Path, roundtrip: dict[str, Any]) -> dict[str, Any]:
             f"Setup class: {roundtrip.get('setup_class', '')}",
             f"Convexity label: {roundtrip.get('convexity_label', '')}",
             f"Research sizing profile: {research_sizing_profile}",
-            "Live canary sizing: micro-live two-slot cap; research sizing is not full-live enabled",
+            f"Research reference capital: {_fmt_decimal(roundtrip.get('research_reference_capital_eur', ''), ' EUR')}",
+            f"Conviction risk: {_fmt_decimal(conviction_risk_pct * Decimal('100'), '%')}",
+            f"Live account equity before entry: {_fmt_decimal(roundtrip.get('live_account_equity_quote_before_entry', ''), f' {quote_asset}')}",
+            f"Live risk amount: {_fmt_decimal(roundtrip.get('live_risk_amount_quote', ''), f' {quote_asset}')}",
+            f"Stop distance: {_fmt_decimal(stop_distance_pct * Decimal('100'), '%')}",
+            f"Conviction target notional: {_fmt_decimal(roundtrip.get('conviction_target_notional_quote', ''), f' {quote_asset}')}",
+            f"Hard cap applied: {'yes' if hard_cap_applied else 'no'}",
+            f"Actual entry notional: {_fmt_decimal(roundtrip.get('actual_order_notional_quote', roundtrip.get('entry_quote_filled', '')), f' {quote_asset}')}",
+            "Live canary sizing: A+/Elite risk sizing scaled to canary equity, then clamped by tiny live caps",
             "",
             "USDC execution patience guard",
             "-----------------------------",
@@ -1124,6 +1222,16 @@ def _maybe_exit_open_positions(root: Path, client: BinanceLiveSpotClient, manife
             "convexity_label": position.get("convexity_label", ""),
             "conviction_tier": position.get("conviction_tier", "normal"),
             "research_sizing_profile": position.get("research_sizing_profile", ""),
+            "research_reference_capital_eur": position.get("research_reference_capital_eur", ""),
+            "conviction_risk_pct": position.get("conviction_risk_pct", ""),
+            "live_account_equity_quote_before_entry": position.get("live_account_equity_quote_before_entry", ""),
+            "live_risk_amount_quote": position.get("live_risk_amount_quote", ""),
+            "stop_distance_pct": position.get("stop_distance_pct", ""),
+            "conviction_target_notional_quote": position.get("conviction_target_notional_quote", ""),
+            "hard_cap_notional_quote": position.get("hard_cap_notional_quote", ""),
+            "hard_cap_applied": position.get("hard_cap_applied", ""),
+            "actual_order_notional_quote": position.get("actual_order_notional_quote", ""),
+            "sizing_fallback_reason": position.get("sizing_fallback_reason", ""),
             "execution_guard_classification": position.get("execution_guard_classification", ""),
             "execution_patience_attempts": position.get("execution_patience_attempts", ""),
             "execution_patience_delay_seconds": position.get("execution_patience_delay_seconds", ""),
@@ -1161,14 +1269,14 @@ def _submit_entry(root: Path, client: BinanceLiveSpotClient, manifest: dict[str,
     max_budget = _parse_decimal(str(manifest["max_test_budget_eur"]), "50")
     max_order_config = _parse_decimal(str(manifest["max_order_notional_eur"]), "10")
     remaining_budget = max_budget - _open_position_exposure_quote(root)
-    max_order = min(max_order_config, remaining_budget)
-    if max_order <= Decimal("0"):
+    guard_notional = min(max_order_config, remaining_budget)
+    if guard_notional <= Decimal("0"):
         raise BinanceLiveSpotSafetyError("live_canary_test_budget_fully_allocated")
     guard_decision = evaluate_usdt_signal_to_usdc_execution_guard_with_patience(
         ExecutionSignal(
             source_symbol=source_symbol,
             side="BUY",
-            order_notional_eur=max_order,
+            order_notional_eur=guard_notional,
             source_signal_time=str(candidate.get("source_timestamp", "")),
             signal_id=str(candidate.get("source_trade_id", "")),
         ),
@@ -1184,12 +1292,6 @@ def _submit_entry(root: Path, client: BinanceLiveSpotClient, manifest: dict[str,
     price_resolution_reason = _current_price_resolves_entry_before_fill(candidate, price)
     if price_resolution_reason:
         raise BinanceLiveSpotSafetyError(price_resolution_reason)
-    quantity = quantity_for_notional(max_order, price, rules)
-    estimated_notional = quantity * price
-    if estimated_notional > max_order:
-        raise BinanceLiveSpotSafetyError("computed canary order notional exceeds cap")
-    if estimated_notional > max_budget:
-        raise BinanceLiveSpotSafetyError("computed canary order exceeds test budget")
     if _daily_closed_loss(root) >= _parse_decimal(str(manifest["max_daily_loss_eur"]), "10"):
         raise BinanceLiveSpotSafetyError("daily canary loss cap reached")
     if client.open_orders(symbol):
@@ -1204,6 +1306,21 @@ def _submit_entry(root: Path, client: BinanceLiveSpotClient, manifest: dict[str,
             f"estimated_{rules.quote_asset}_account_value_exceeds_live_canary_cap:"
             f"{decimal_to_plain(estimated_account_value_quote)}>{decimal_to_plain(max_account)}"
         )
+    sizing = _risk_based_canary_sizing(
+        candidate=candidate,
+        estimated_account_value_quote=estimated_account_value_quote,
+        max_order_config=max_order_config,
+        remaining_budget=remaining_budget,
+    )
+    max_order = Decimal(str(sizing["order_notional_quote"]))
+    if max_order <= Decimal("0"):
+        raise BinanceLiveSpotSafetyError("live_canary_sizing_resolved_to_zero")
+    quantity = quantity_for_notional(max_order, price, rules)
+    estimated_notional = quantity * price
+    if estimated_notional > max_order:
+        raise BinanceLiveSpotSafetyError("computed canary order notional exceeds conviction/cap notional")
+    if estimated_notional > max_budget:
+        raise BinanceLiveSpotSafetyError("computed canary order exceeds test budget")
     if quote_before < estimated_notional:
         raise BinanceLiveSpotSafetyError(f"insufficient_{rules.quote_asset}_balance_for_live_canary")
     seed = f"{COURT_NAME}|ENTRY|{candidate['source_trade_id']}|{_now()}"
@@ -1253,7 +1370,17 @@ def _submit_entry(root: Path, client: BinanceLiveSpotClient, manifest: dict[str,
         "setup_class": candidate.get("setup_class", ""),
         "convexity_label": candidate.get("convexity_label", ""),
         "conviction_tier": candidate.get("conviction_tier", "normal"),
-        "research_sizing_profile": "a_plus_2p50_elite_3p00_total_5p00; live canary remains capped by RTS_LIVE_CANARY_MAX_ORDER_NOTIONAL_EUR and RTS_LIVE_CANARY_MAX_TEST_BUDGET_EUR",
+        "research_sizing_profile": A_PLUS_RESEARCH_PROFILE_ID,
+        "research_reference_capital_eur": sizing["research_reference_capital_eur"],
+        "conviction_risk_pct": sizing["conviction_risk_pct"],
+        "live_account_equity_quote_before_entry": sizing["live_account_equity_quote_before_entry"],
+        "live_risk_amount_quote": sizing["live_risk_amount_quote"],
+        "stop_distance_pct": sizing["stop_distance_pct"],
+        "conviction_target_notional_quote": sizing["conviction_target_notional_quote"],
+        "hard_cap_notional_quote": sizing["hard_cap_notional_quote"],
+        "hard_cap_applied": sizing["hard_cap_applied"],
+        "actual_order_notional_quote": estimated_notional,
+        "sizing_fallback_reason": sizing["sizing_fallback_reason"],
         "base_balance_before_entry": base_before,
         "base_balance_after_entry": _asset_balance(after, rules.base_asset),
         "quote_balance_before_entry": quote_before,

@@ -329,16 +329,33 @@ Largest historical sizing examples:
 | Signal | `BTCUSDT`, elite tier, `2025-09-13 07:00 UTC` entry |
 
 The notional figure is a research estimate derived from risk divided by stop
-distance. It is not the current live canary amount. Current live canary remains
-micro-capped by environment controls: up to two open positions, about `47.50 USDC`
-per order, `100 USDC` total test budget, and a `25 USDC` daily closed-loss cap.
+distance. Production now uses the same A+/Elite sizing formula for canary
+calculation, scaled to the real canary account equity, then clamped by hard tiny
+live limits. Current live canary remains micro-capped by environment controls:
+up to two open positions, about `47.50 USDC` per order, `100 USDC` total test
+budget, and a `25 USDC` daily closed-loss cap.
+
+Live canary sizing formula:
+
+```text
+conviction_risk_amount = live_account_equity * tier_risk_pct
+target_notional        = conviction_risk_amount / stop_distance_pct
+actual_order_notional  = min(target_notional, per_order_cap, remaining_test_budget)
+```
+
+This is the production bridge toward the `€15.49M` research path: the sizing
+logic is already wired, but full-capital live behavior remains disabled until a
+separate promotion changes the caps and passes the reliability gates.
 
 Production interpretation:
 
 - A+/Elite sizing is a research-validated sizing candidate.
 - Full capital live deployment is still gated.
-- Hetzner canary emails label the conviction tier for audit clarity.
-- Tiny canary order caps remain unchanged.
+- Hetzner canary entries now calculate A+/Elite risk-based notional from live
+  account equity and stop distance.
+- Hetzner canary emails show conviction tier, risk percent, stop distance,
+  target notional, cap applied, actual order notional, equity, and PnL.
+- Tiny canary hard caps remain unchanged.
 
 That is the current “ready for real-money canary” conclusion: not because the
 system is allowed to trade full capital, but because the route from signal to

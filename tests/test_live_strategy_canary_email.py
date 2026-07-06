@@ -46,6 +46,14 @@ def test_entry_email_writes_clear_plain_and_html_artifacts(tmp_path, monkeypatch
             "convexity_label": "elite_convexity",
             "conviction_tier": "elite",
             "research_sizing_profile": "a_plus_2p50_elite_3p00_total_5p00; live canary remains capped",
+            "research_reference_capital_eur": Decimal("25000"),
+            "conviction_risk_pct": Decimal("0.03"),
+            "live_account_equity_quote_before_entry": Decimal("111.1234"),
+            "live_risk_amount_quote": Decimal("3.333702"),
+            "stop_distance_pct": Decimal("0.02"),
+            "conviction_target_notional_quote": Decimal("166.6851"),
+            "hard_cap_applied": True,
+            "actual_order_notional_quote": Decimal("6"),
             "max_order_notional_quote": Decimal("6"),
         },
     )
@@ -56,7 +64,10 @@ def test_entry_email_writes_clear_plain_and_html_artifacts(tmp_path, monkeypatch
     assert "Estimated total canary equity after entry: 111.1234 USDC" in text
     assert "Conviction tier: elite" in text
     assert "Research sizing profile: a_plus_2p50_elite_3p00_total_5p00; live canary remains capped" in text
-    assert "Live canary sizing: micro-live two-slot cap" in text
+    assert "Conviction risk: 3%" in text
+    assert "Hard cap applied: yes" in text
+    assert "Actual order notional: 6 USDC" in text
+    assert "Live canary sizing: A+/Elite risk sizing scaled to canary equity" in text
     assert "Exit email is sent only after a later SELL fill" in text
     assert "BUY filled: 6 USDC" in html
     assert "Estimated total canary equity after entry" in html
@@ -226,6 +237,13 @@ def test_submit_entry_passes_configured_canary_cap_to_execution_guard(tmp_path, 
     assert captured["signal_notional"] == Decimal("47.50")
     assert captured["threshold_cap"] == Decimal("47.50")
     assert result["orders_submitted"] == 1
+    position = result["open_position"]
+    assert position["research_sizing_profile"] == "a_plus_2p50_elite_3p00_total_5p00"
+    assert position["conviction_risk_pct"] == Decimal("0.03")
+    assert position["stop_distance_pct"] == Decimal("0.02")
+    assert position["conviction_target_notional_quote"] == Decimal("180")
+    assert position["hard_cap_applied"] is True
+    assert position["actual_order_notional_quote"] == Decimal("47.50")
 
 
 def test_append_csv_rotates_legacy_schema_before_writing_current_header(tmp_path) -> None:
