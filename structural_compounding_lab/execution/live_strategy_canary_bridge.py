@@ -406,82 +406,85 @@ def _fmt_signed_quote(value: Any, asset: str = "USDC") -> str:
 
 def _html_document(*, title: str, hero: str, hero_kind: str, sections: list[tuple[str, list[tuple[str, Any]]]], footer: str) -> str:
     color = "#10b981" if hero_kind == "profit" else "#f59e0b" if hero_kind == "entry" else "#ef4444"
-    accent_bg = "rgba(16,185,129,.16)" if hero_kind == "profit" else "rgba(245,158,11,.16)" if hero_kind == "entry" else "rgba(239,68,68,.16)"
+    soft_color = "#dcfce7" if hero_kind == "profit" else "#fef3c7" if hero_kind == "entry" else "#fee2e2"
+    dark_color = "#064e3b" if hero_kind == "profit" else "#78350f" if hero_kind == "entry" else "#7f1d1d"
+    accent_bg = "#ecfdf5" if hero_kind == "profit" else "#fffbeb" if hero_kind == "entry" else "#fef2f2"
     emoji = "🎯" if hero_kind == "profit" else "⚡" if hero_kind == "entry" else "🛡️"
     status_label = "PROFIT EXIT" if hero_kind == "profit" else "LIVE CANARY ENTRY" if hero_kind == "entry" else "LOSS CONTROL"
     first_rows = sections[0][1] if sections else []
     kpi_html = []
     for key, value in first_rows[:4]:
         kpi_html.append(
-            "<td class=\"metric\">"
-            f"<div class=\"metricLabel\">{escape(str(key))}</div>"
-            f"<div class=\"metricValue\">{escape(str(value))}</div>"
+            "<td style=\"width:25%;padding:6px;vertical-align:top;\">"
+            "<div style=\"border:1px solid #dbeafe;border-radius:14px;background:#f8fafc;padding:12px;min-height:58px;\">"
+            f"<div style=\"font-size:10px;letter-spacing:.10em;text-transform:uppercase;color:#64748b;font-weight:800;line-height:1.25;\">{escape(str(key))}</div>"
+            f"<div style=\"font-size:15px;line-height:1.25;color:#0f172a;font-weight:900;margin-top:6px;word-break:break-word;\">{escape(str(value))}</div>"
+            "</div>"
             "</td>"
         )
     rows: list[str] = []
-    for heading, items in sections:
-        rows.append(f"<div class=\"section\"><h2>{escape(heading)}</h2>")
-        rows.append("<table class=\"dataTable\">")
-        for key, value in items:
+    for section_index, (heading, items) in enumerate(sections, start=1):
+        rows.append(
+            "<div style=\"border:1px solid #d7e3f0;border-radius:18px;background:#ffffff;margin:14px 0;overflow:hidden;box-shadow:0 6px 18px rgba(15,23,42,.05);\">"
+            "<div style=\"padding:12px 16px;background:linear-gradient(90deg,#eff6ff,#ffffff);border-bottom:1px solid #e2e8f0;\">"
+            f"<span style=\"display:inline-block;background:#0f172a;color:#ffffff;border-radius:999px;padding:4px 9px;font-size:10px;font-weight:900;letter-spacing:.08em;margin-right:8px;\">{section_index:02d}</span>"
+            f"<span style=\"font-size:15px;color:#0f172a;font-weight:900;letter-spacing:.02em;\">{escape(heading)}</span>"
+            "</div>"
+        )
+        rows.append("<table role=\"presentation\" style=\"width:100%;border-collapse:collapse;\">")
+        for item_index, (key, value) in enumerate(items):
+            row_bg = "#ffffff" if item_index % 2 == 0 else "#f8fafc"
             rows.append(
-                "<tr>"
-                f"<th>{escape(str(key))}</th>"
-                f"<td>{escape(str(value))}</td>"
+                f"<tr style=\"background:{row_bg};\">"
+                f"<td style=\"width:38%;padding:11px 16px;border-bottom:1px solid #edf2f7;color:#64748b;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;vertical-align:top;\">{escape(str(key))}</td>"
+                f"<td style=\"padding:11px 16px;border-bottom:1px solid #edf2f7;color:#111827;font-size:14px;font-weight:750;line-height:1.45;vertical-align:top;word-break:break-word;\">{escape(str(value))}</td>"
                 "</tr>"
             )
         rows.append("</table></div>")
     return f"""<!doctype html>
 <html>
-  <body style="margin:0;background:#050b16;color:#e5eef9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
-    <div class="stage" style="max-width:860px;margin:0 auto;padding:28px;">
-      <div class="shell">
-        <div class="topbar">
-          <div class="eyebrow">RTS Live Canary · Binance Spot · USDC guarded execution</div>
-          <h1>{escape(title)}</h1>
-          <div class="subtitle">Tiny real-money canary only. This is not full capital deployment.</div>
+  <body style="margin:0;background:#eef3f8;color:#0f172a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
+    <div style="max-width:820px;margin:0 auto;padding:22px;">
+      <div style="border:1px solid #cbd5e1;border-radius:24px;background:#ffffff;box-shadow:0 18px 45px rgba(15,23,42,.16);overflow:hidden;">
+        <div style="background:linear-gradient(135deg,#07111f,#0b2532 58%,#111827);padding:22px 26px;color:#ffffff;">
+          <div style="font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:#93c5fd;font-weight:900;">RTS Live Canary · Binance Spot · USDC guarded execution</div>
+          <div style="font-size:22px;line-height:1.22;font-weight:950;margin-top:9px;">{escape(title)}</div>
+          <div style="font-size:13px;line-height:1.45;color:#cbd5e1;font-weight:650;margin-top:7px;">Tiny real-money canary only. This is not full capital deployment.</div>
         </div>
-        <div class="content">
-          <div class="hero" style="border-color:{color};background:linear-gradient(135deg,{accent_bg},rgba(15,23,42,.88));">
-            <div class="orb" style="background:{color};box-shadow:0 0 34px {color};">{emoji}</div>
-            <div>
-              <div class="heroLabel" style="color:{color};">{status_label}</div>
-              <div class="heroText">{escape(hero)}</div>
-            </div>
+        <div style="padding:18px 22px 22px;background:#f8fafc;">
+          <div style="border:2px solid {color};background:{accent_bg};border-radius:18px;padding:16px;margin-bottom:12px;">
+            <table role="presentation" style="width:100%;border-collapse:collapse;">
+              <tr>
+                <td style="width:54px;vertical-align:top;">
+                  <div style="width:42px;height:42px;border-radius:14px;background:{color};color:#ffffff;display:inline-block;text-align:center;line-height:42px;font-size:22px;box-shadow:0 8px 22px {soft_color};">{emoji}</div>
+                </td>
+                <td style="vertical-align:top;">
+                  <div style="font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:{dark_color};font-weight:950;">{status_label}</div>
+                  <div style="font-size:21px;line-height:1.25;color:#0f172a;font-weight:950;margin-top:5px;">{escape(hero)}</div>
+                </td>
+              </tr>
+            </table>
           </div>
-          <table class="metricGrid"><tr>{''.join(kpi_html)}</tr></table>
+          <div style="border:1px solid #d7e3f0;border-radius:18px;background:#ffffff;margin:12px 0 14px;overflow:hidden;">
+            <div style="padding:10px 15px;background:#f1f5f9;border-bottom:1px solid #e2e8f0;font-size:13px;font-weight:900;color:#0f172a;">At-a-glance</div>
+            <table role="presentation" style="width:100%;border-collapse:separate;border-spacing:0;padding:6px;">
+              <tr>{''.join(kpi_html)}</tr>
+            </table>
+          </div>
           {''.join(rows)}
-          <div class="footerBox">{escape(footer)}</div>
+          <div style="margin-top:14px;border:1px solid #cbd5e1;border-radius:16px;background:#f8fafc;padding:13px 15px;color:#334155;font-size:13px;line-height:1.55;font-weight:650;">
+            <div style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#475569;font-weight:950;margin-bottom:5px;">Operational note</div>
+            {escape(footer)}
+          </div>
+          <div style="text-align:center;color:#94a3b8;font-size:11px;padding:16px 0 2px;">
+            RTS guarded canary · Spot long-only · no margin · no futures · no withdrawals
+          </div>
         </div>
       </div>
     </div>
-    <style>
-      @keyframes pulseGlow {{ 0% {{ transform:scale(1); opacity:.92; }} 50% {{ transform:scale(1.04); opacity:1; }} 100% {{ transform:scale(1); opacity:.92; }} }}
-      .shell {{ border:1px solid rgba(148,163,184,.38); border-radius:26px; background:radial-gradient(circle at 20% 0%,rgba(34,211,238,.22),transparent 34%),radial-gradient(circle at 100% 0%,rgba(168,85,247,.20),transparent 30%),linear-gradient(135deg,#07111f,#0b2532 54%,#111827); box-shadow:0 24px 70px rgba(0,0,0,.48); overflow:hidden; }}
-      .topbar {{ padding:28px 32px; border-bottom:1px solid rgba(148,163,184,.24); background:rgba(255,255,255,.035); }}
-      .eyebrow {{ letter-spacing:.18em; text-transform:uppercase; color:#93c5fd; font-size:12px; font-weight:900; }}
-      h1 {{ font-size:31px; line-height:1.15; margin:10px 0 8px; color:#ffffff; }}
-      .subtitle {{ color:#a8b3c7; font-size:14px; font-weight:700; }}
-      .content {{ padding:28px 32px 32px; }}
-      .hero {{ border:1px solid; border-radius:22px; padding:22px; margin-bottom:18px; display:flex; gap:16px; align-items:center; box-shadow:inset 0 0 42px rgba(255,255,255,.035); }}
-      .orb {{ width:54px; height:54px; border-radius:18px; display:inline-flex; align-items:center; justify-content:center; font-size:26px; animation:pulseGlow 2.8s ease-in-out infinite; }}
-      .heroLabel {{ font-size:13px; letter-spacing:.14em; text-transform:uppercase; font-weight:950; }}
-      .heroText {{ font-size:32px; line-height:1.14; color:#ffffff; font-weight:950; margin-top:6px; }}
-      .metricGrid {{ width:100%; border-collapse:separate; border-spacing:10px; margin:0 0 18px; }}
-      .metric {{ width:25%; padding:14px; border:1px solid rgba(125,211,252,.24); border-radius:16px; background:linear-gradient(135deg,rgba(14,165,233,.12),rgba(15,23,42,.78)); vertical-align:top; }}
-      .metricLabel {{ color:#93a4b8; font-size:11px; letter-spacing:.12em; text-transform:uppercase; font-weight:900; }}
-      .metricValue {{ color:#f8fafc; font-size:16px; line-height:1.25; font-weight:950; margin-top:7px; }}
-      .section {{ border:1px solid rgba(148,163,184,.20); border-radius:18px; padding:14px; margin:16px 0; background:rgba(2,6,23,.34); }}
-      .dataTable {{ width:100%; border-collapse:collapse; background:rgba(15,23,42,.72); border-radius:14px; overflow:hidden; }}
-      th,td {{ padding:12px 14px; border-bottom:1px solid rgba(148,163,184,.18); text-align:left; vertical-align:top; }}
-      th {{ width:40%; color:#93a4b8; font-size:12px; text-transform:uppercase; letter-spacing:.08em; }}
-      td {{ color:#f8fafc; font-size:15px; font-weight:800; }}
-      h2 {{ color:#e0f2fe; font-size:18px; margin:0 0 10px; }}
-      .footerBox {{ margin-top:20px; color:#cbd5e1; font-size:13px; line-height:1.6; border:1px solid rgba(148,163,184,.18); border-radius:16px; padding:14px; background:rgba(15,23,42,.55); }}
-    </style>
   </body>
 </html>
 """
-
 
 def _email(root: Path, *, subject: str, body_lines: list[str], html_body: str | None = None) -> dict[str, Any]:
     paths = _paths(root)
