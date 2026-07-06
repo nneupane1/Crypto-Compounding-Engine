@@ -9,8 +9,10 @@ from structural_compounding_lab.execution.live_strategy_canary_bridge import (
     _open_position_symbols,
     _open_positions,
     _position_path,
+    _submit_entry,
     _write_json,
 )
+from structural_compounding_lab.execution.usdt_usdc_execution_guard import GuardDecision
 
 
 def _disable_smtp(monkeypatch) -> None:
@@ -136,3 +138,89 @@ def test_open_position_state_supports_two_independent_slots(tmp_path) -> None:
     assert [position["source_trade_id"] for position in positions] == ["ADAUSDT-1", "BNBUSDT-1"]
     assert _open_position_symbols(tmp_path) == {"ADAUSDC", "BNBUSDC"}
     assert _open_position_exposure_quote(tmp_path) == Decimal("94.75")
+
+
+def test_submit_entry_passes_configured_canary_cap_to_execution_guard(tmp_path, monkeypatch) -> None:
+    captured: dict[str, Decimal] = {}
+
+    def fake_guard(signal, *, thresholds=None, **kwargs):
+        captured["signal_notional"] = signal.order_notional_eur
+        captured["threshold_cap"] = thresholds.max_order_notional_eur
+        return GuardDecision(
+            accepted=True,
+            classification="TEST_GUARD_ACCEPTED",
+            source_symbol=signal.source_symbol,
+            execution_symbol="ADAUSDC",
+            side=signal.side,
+            reasons=[],
+            metrics={"patience": {"attempt_count": 1, "delay_seconds": 0}},
+            order_allowed_after_guard=True,
+        )
+
+    class FakeClient:
+        def exchange_info(self, symbol):
+            return {
+                "symbols": [
+                    {
+                        "symbol": symbol,
+                        "baseAsset": "ADA",
+                        "quoteAsset": "USDC",
+                        "filters": [
+                            {"filterType": "LOT_SIZE", "stepSize": "0.1", "minQty": "0.1"},
+                            {"filterType": "PRICE_FILTER", "tickSize": "0.0001"},
+                            {"filterType": "MIN_NOTIONAL", "minNotional": "5"},
+                        ],
+                    }
+                ]
+            }
+
+        def ticker_price(self, symbol):
+            return Decimal("0.50")
+
+        def open_orders(self, symbol):
+            return []
+
+        def account(self):
+            return {"balances": [{"asset": "USDC", "free": "120"}, {"asset": "ADA", "free": "0"}]}
+
+        def create_order(self, intent, client_order_id):
+            return {
+                "orderId": "123",
+                "status": "FILLED",
+                "executedQty": str(intent.quantity),
+                "cummulativeQuoteQty": "47.50",
+                "fills": [],
+            }
+
+    monkeypatch.setattr(
+        "structural_compounding_lab.execution.live_strategy_canary_bridge.evaluate_usdt_signal_to_usdc_execution_guard_with_patience",
+        fake_guard,
+    )
+    monkeypatch.setenv("RTS_ALERT_EMAIL_ENABLED", "false")
+
+    result = _submit_entry(
+        tmp_path,
+        FakeClient(),
+        {
+            "max_open_positions": 2,
+            "max_test_budget_eur": "100",
+            "max_order_notional_eur": "47.50",
+            "max_daily_loss_eur": "25",
+            "max_account_capital_eur": "150",
+        },
+        {
+            "symbol": "ADAUSDT",
+            "source_timestamp": "2026-07-06T11:00:00+00:00",
+            "source_trade_id": "ADAUSDT-77",
+            "entry_reference": "0.50",
+            "stop_reference": "0.49",
+            "target_reference": "0.55",
+            "setup_class": "A",
+            "convexity_label": "elite_convexity",
+            "conviction_tier": "elite",
+        },
+    )
+
+    assert captured["signal_notional"] == Decimal("47.50")
+    assert captured["threshold_cap"] == Decimal("47.50")
+    assert result["orders_submitted"] == 1

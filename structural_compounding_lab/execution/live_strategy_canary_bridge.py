@@ -30,6 +30,7 @@ from structural_compounding_lab.execution.binance_live_spot_client import (
 from structural_compounding_lab.execution.demo_order_models import DemoOrderIntent
 from structural_compounding_lab.execution.usdt_usdc_execution_guard import (
     ExecutionSignal,
+    GuardThresholds,
     PatienceGuardConfig,
     USDT_TO_USDC,
     evaluate_usdt_signal_to_usdc_execution_guard_with_patience,
@@ -353,6 +354,7 @@ def _roundtrip_fieldnames() -> list[str]:
         "created_at",
         "source_trade_id",
         "symbol",
+        "quote_asset",
         "entry_client_order_id",
         "exit_client_order_id",
         "entry_quote_filled",
@@ -362,6 +364,7 @@ def _roundtrip_fieldnames() -> list[str]:
         "quote_balance_before_exit",
         "quote_balance_after_exit",
         "base_balance_after_exit",
+        "estimated_total_equity_quote_after_exit",
         "exit_reason",
         "result_label",
         "setup_class",
@@ -1117,6 +1120,7 @@ def _submit_entry(root: Path, client: BinanceLiveSpotClient, manifest: dict[str,
             source_signal_time=str(candidate.get("source_timestamp", "")),
             signal_id=str(candidate.get("source_trade_id", "")),
         ),
+        thresholds=GuardThresholds(max_order_notional_eur=max_order_config),
         patience_config=PatienceGuardConfig(patience_seconds=300, recheck_interval_seconds=15),
     )
     if not guard_decision.accepted:
