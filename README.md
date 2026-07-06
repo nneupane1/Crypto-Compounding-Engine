@@ -25,6 +25,8 @@ Current status: guarded 100 USDC micro-live canary is ready and running on Hetzn
 | [Hetzner production layout](#hetzner-production-layout) | Docker services, systemd timer, and persistent volumes. |
 | [Runtime artifact map](#runtime-artifact-map) | Where ledgers, status files, candle snapshots, order fills, roundtrips, and email artifacts are written. |
 | [Email streams](#email-streams) | Difference between signal emails and real Binance canary order emails. |
+| [Latest operational changes](#latest-operational-changes) | The newest production fixes: stale canary-entry block, 1-minute canary checks, demo shutdown, and current Hetzner status. |
+| [EUR-native investigation](#eur-native-investigation) | Why EUR pairs are being tested, what completed so far, and why EUR-native is not yet the production route. |
 | [What “ready to trade real money” means here](#what-ready-to-trade-real-money-means-here) | What is approved now, what is still gated, and why full €25k is not enabled yet. |
 | [Promotion ladder](#promotion-ladder) | The staged path from tiny smoke to canary to small capital to full capital. |
 | [Hard safety contract](#hard-safety-contract) | The non-negotiable disabled paths and live risk caps. |
@@ -45,7 +47,7 @@ Current status: guarded 100 USDC micro-live canary is ready and running on Hetzn
 | Active strategy universe | 9 symbols |
 | Signal quote route | USDT |
 | Live execution quote route | USDC |
-| Runtime cadence | every 5 minutes |
+| Runtime cadence | runtime loop continuous; live canary checks every 1 minute |
 | Data source | public unsigned Binance klines |
 | Execution product | Binance Spot only |
 | Short selling | disabled for live execution |
@@ -81,6 +83,7 @@ That split is not a hack. It is the useful engineering compromise: keep the best
 | Research result after costs + yearly tax reserve | `€5,393,682.06` from `€25,000` |
 | Bridge research result after costs + yearly tax reserve before live guard filtering | `€5,333,441.95` from `€25,000` |
 | Locked live execution guard | symbol-aware USDC execution safety with `5m` patience |
+| Live canary freshness guard | blocks stale entries, already-closed shadow trades, and target/stop-resolved late entries |
 | 5m patience-guard research estimate after costs + yearly tax reserve | `€4,115,595.94` from `€25,000` |
 | 5m patience-guard sealed holdout | `€110,226.24` from `€25,000` |
 | A+/Elite conviction sizing research after costs + yearly tax reserve | `€15,488,951.85` from `€25,000` |
@@ -468,7 +471,7 @@ flowchart TD
 | Component | Role |
 | --- | --- |
 | `runtime` container | always-on market data + frozen signal engine |
-| `rts-live-canary-usdc.timer` | systemd timer checking for fresh signals every 5 minutes |
+| `rts-live-canary-usdc.timer` | systemd timer checking for fresh signals every 1 minute |
 | `live-canary` Docker profile | tiny real-money USDC execution bridge |
 | `live-smoke` Docker profile | one-off buy/sell plumbing test |
 | `dashboard-api` | read-only telemetry API |
@@ -530,6 +533,165 @@ Both now use the same clean layout:
 - 5-minute USDC execution patience guard status;
 - safety gates;
 - plain-text and HTML artifacts.
+
+---
+
+## Latest operational changes
+
+This section records the newest production changes after the first Hetzner
+canary deployment. It exists so a reader does not confuse historical research
+emails, live signal emails, demo/testnet emails, and real Binance canary emails.
+
+### 2026-07-06: stale canary-entry incident and fix
+
+A real canary roundtrip exposed an important production synchronization issue:
+the shadow signal ledger contained an already-completed trade, and the canary
+entered after the shadow trade had already exited.
+
+Observed event:
+
+| Item | Value |
+| --- | --- |
+| Shadow trade | `XRPUSDT-55` |
+| Shadow entry | `2026-07-06T14:00:00 UTC` |
+| Shadow exit | `2026-07-06T15:00:00 UTC` |
+| Shadow PnL | `+€270.96` |
+| Canary route | `XRPUSDT` signal mapped to `XRPUSDC` execution |
+| Canary buy fill | `2026-07-06T15:12:40 UTC`, `1.1272` |
+| Canary sell fill | `2026-07-06T15:18:09 UTC`, `1.1270` |
+| Canary PnL | `-0.1660873 USDC` |
+
+Interpretation:
+
+- the frozen strategy did not fail;
+- the USDT shadow signal was already closed profitably;
+- the live canary was late and should not have chased the completed signal;
+- this was a live follower synchronization problem, not a research-logic change.
+
+Fix implemented:
+
+| Guard | New behavior |
+| --- | --- |
+| Already-closed source trade | block entry with `blocked_late_entry_shadow_trade_already_closed` |
+| Stale source entry | block if signal age exceeds `7200` seconds |
+| Target already reached before buy | block with `blocked_late_entry_target_already_reached` |
+| Stop already reached before buy | block with `blocked_late_entry_stop_already_reached` |
+| Live canary polling | changed from every `5 minutes` to every `1 minute` |
+| Duplicate risk | still blocked by live canary state and ledger checks |
+
+This fix reduces bad live chasing risk. It does not change the frozen strategy,
+the historical A+/Elite sizing court, or the USDT signal ledger. It only
+controls whether the real-money canary is allowed to enter a signal that it saw
+too late.
+
+### 2026-07-06: current Hetzner live canary status
+
+Latest inspected Hetzner status:
+
+| Field | Value |
+| --- | --- |
+| Latest status time | `2026-07-06T19:36:28 UTC` |
+| Classification | `BINANCE_LIVE_STRATEGY_CANARY_NO_ELIGIBLE_SIGNAL` |
+| Reason | `no_fresh_eligible_live_canary_signal` |
+| Source rows seen | `734` |
+| Eligible fresh signals seen | `0` |
+| Skipped signal rows | `2` |
+| Orders submitted in latest run | `0` |
+| Max open canary positions | `2` |
+| Max order notional | `47.5 USDC` |
+| Max canary test budget | `100 USDC` |
+
+This is the correct safe behavior after the stale-entry fix: the canary does not
+chase already-completed historical/backlog trades.
+
+### 2026-07-06: Mac demo/testnet schedulers stopped
+
+The local MacBook was still sending Binance demo/testnet emails from old
+LaunchAgents. These were stopped so future email streams are less confusing.
+
+Stopped local demo/testnet LaunchAgents:
+
+| LaunchAgent | Status |
+| --- | --- |
+| `com.retail_trading_system.binance_demo_walk_forward_six_month_court` | stopped |
+| `com.retail_trading_system.binance_demo_walk_forward_six_hour_court` | stopped |
+| `com.retail_trading_system.binance_demo_one_hour_1m_execution_smoke` | stopped |
+
+Still intentionally separate:
+
+| Runtime | Location | Purpose |
+| --- | --- | --- |
+| EUR-native research court | MacBook | long research backtest, not live execution |
+| Hetzner USDC canary | Hetzner | tiny real-money execution validation |
+| Hetzner signal runtime | Hetzner | production signal/canary source |
+
+---
+
+## EUR-native investigation
+
+EUR-native research is being tested because the account is based in Germany and
+EUR is the user’s home currency. The EUR-native court is different from the
+current production USDT→USDC bridge:
+
+| Route | Signal candles | Execution candles | PnL currency | Current production route? |
+| --- | --- | --- | --- | --- |
+| USDT signal → USDC execution | USDT | USDC | USDC/EUR diagnostic | yes |
+| EUR-native | EUR | EUR | EUR | no, research-only investigation |
+
+The EUR-native court does not use USDT candles to decide entries or exits. EUR
+candles decide both entry timing and exit timing.
+
+### Completed EUR assets so far
+
+Current EUR-native run is still research-only and not final freeze evidence yet.
+The completed assets already show that EUR pairs are profitable, but the old
+run used a placeholder historical-gap manifest. That manifest issue has been
+patched and requires a fresh clean rerun before EUR-native can be judged.
+
+Completed asset figures from the current run:
+
+| Symbol | Research PnL | Research ending equity | Sealed-holdout PnL | Sealed-holdout ending equity |
+| --- | ---: | ---: | ---: | ---: |
+| `BNBEUR` | `+€2,472,579.46` | `€2,497,579.46` | `+€8,991.83` | `€33,991.83` |
+| `BTCEUR` | `+€1,787,600.71` | `€1,812,600.71` | `+€7,367.36` | `€32,367.36` |
+| `ETHEUR` | `+€1,327,805.22` | `€1,352,805.22` | `+€14,383.20` | `€39,383.20` |
+| `SOLEUR` | `+€2,007,985.97` | `€2,032,985.97` | `+€8,766.79` | `€33,766.79` |
+
+### BTCEUR failure explanation
+
+BTCEUR did not fail because it lost money. It failed because the anti-leakage
+audit could not confirm historical research gaps as exchange no-candle
+intervals under the old placeholder manifest.
+
+BTCEUR data-quality facts:
+
+| Item | Value |
+| --- | --- |
+| Full rows | `3,417,174` |
+| First timestamp | `2020-01-03T08:00:00 UTC` |
+| Last timestamp | `2026-07-05T00:00:00 UTC` |
+| Historical research gaps | `15` |
+| Missing historical minutes | `2,347` |
+| Holdout gaps | `0` |
+| Duplicates | `0` |
+| OHLC failures | `0` |
+| Public Binance re-fetch smoke result | `0 candles returned for missing intervals` |
+
+Patch added:
+
+- build EUR-specific historical exchange gap manifest;
+- re-fetch missing intervals from public unsigned Binance klines;
+- classify true no-candle intervals as `DOCUMENTED_BINANCE_NO_CANDLE_INTERVAL`;
+- do not insert synthetic candles;
+- do not forward-fill/back-fill fake bars;
+- record the actual EUR manifest source path.
+
+Decision:
+
+- EUR-native remains promising but not frozen.
+- The production route remains USDT signal → USDC execution until a clean
+  EUR-native rerun beats or matches it under the same cost, tax, holdout, and
+  anti-leakage standards.
 
 ---
 
