@@ -1337,6 +1337,8 @@ def run(mode: str, *, source_ledger: Path | None = None, output_dir: Path | None
                     "reason": "no_fresh_eligible_live_canary_signal",
                     "source_rows_seen": source_rows,
                     "eligible_signals_seen": 0,
+                    "skipped_signal_rows": len(skipped),
+                    "latest_skipped_signal": {key: value for key, value in (skipped[-1] if skipped else {}).items() if key != "raw"},
                     "orders_submitted": 0,
                     "real_money_allowed": False,
                     "live_canary_order_path_allowed": False,
