@@ -129,6 +129,14 @@ def _read_csv(path: Path) -> list[dict[str, str]]:
 def _append_csv(path: Path, row: dict[str, Any], fieldnames: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     exists = path.exists()
+    if exists and path.stat().st_size > 0:
+        with path.open(newline="", encoding="utf-8") as existing_handle:
+            existing_header = next(csv.reader(existing_handle), [])
+        if existing_header and existing_header != fieldnames:
+            stamp = _now_dt().strftime("%Y%m%dT%H%M%S%fZ")
+            legacy_path = path.with_name(f"{path.stem}.legacy_schema_mismatch_{stamp}{path.suffix}")
+            path.replace(legacy_path)
+            exists = False
     with path.open("a", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         if not exists:

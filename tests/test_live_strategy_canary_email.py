@@ -3,6 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from structural_compounding_lab.execution.live_strategy_canary_bridge import (
+    _append_csv,
     _entry_email,
     _exit_email,
     _open_position_exposure_quote,
@@ -224,3 +225,29 @@ def test_submit_entry_passes_configured_canary_cap_to_execution_guard(tmp_path, 
     assert captured["signal_notional"] == Decimal("47.50")
     assert captured["threshold_cap"] == Decimal("47.50")
     assert result["orders_submitted"] == 1
+
+
+def test_append_csv_rotates_legacy_schema_before_writing_current_header(tmp_path) -> None:
+    path = tmp_path / "ledger" / "live_canary_roundtrips.csv"
+    path.parent.mkdir(parents=True)
+    path.write_text("created_at,source_trade_id,symbol\nold,trade-1,ADAUSDC\n", encoding="utf-8")
+
+    current_fieldnames = ["created_at", "source_trade_id", "symbol", "quote_asset"]
+    _append_csv(
+        path,
+        {
+            "created_at": "new",
+            "source_trade_id": "trade-2",
+            "symbol": "ADAUSDC",
+            "quote_asset": "USDC",
+        },
+        current_fieldnames,
+    )
+
+    assert path.read_text(encoding="utf-8").splitlines() == [
+        "created_at,source_trade_id,symbol,quote_asset",
+        "new,trade-2,ADAUSDC,USDC",
+    ]
+    legacy = list((tmp_path / "ledger").glob("live_canary_roundtrips.legacy_schema_mismatch_*.csv"))
+    assert len(legacy) == 1
+    assert legacy[0].read_text(encoding="utf-8").splitlines()[0] == "created_at,source_trade_id,symbol"
