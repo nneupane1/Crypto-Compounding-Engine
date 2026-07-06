@@ -224,6 +224,11 @@ def _open_positions(root: Path) -> list[tuple[Path, dict[str, Any]]]:
     return positions
 
 
+def _sync_legacy_open_position_snapshot(root: Path) -> None:
+    positions = _open_positions(root)
+    _write_json(_paths(root)["open_position"], positions[0][1] if positions else {})
+
+
 def _open_position_symbols(root: Path) -> set[str]:
     return {str(position.get("symbol", "")).upper() for _, position in _open_positions(root) if position.get("symbol")}
 
@@ -1243,7 +1248,7 @@ def _maybe_exit_open_positions(root: Path, client: BinanceLiveSpotClient, manife
         position["exit_exchange_order_id"] = str(response.get("orderId", ""))
         position["exit_reason"] = exit_reason
         _write_json(position_path, position)
-        _write_json(_paths(root)["open_position"], position)
+        _sync_legacy_open_position_snapshot(root)
         email = _exit_email(root, roundtrip)
         return {
             **manifest,
@@ -1433,6 +1438,7 @@ def run(mode: str, *, source_ledger: Path | None = None, output_dir: Path | None
             row["mode"] = mode
             _append_csv(_paths(root)["candidate_ledger"], row, _candidate_fieldnames())
         if mode in {"status", "dry_run"}:
+            _sync_legacy_open_position_snapshot(root)
             status = {
                 **manifest,
                 "final_classification": DRY_RUN_READY if candidates else NO_ELIGIBLE,
