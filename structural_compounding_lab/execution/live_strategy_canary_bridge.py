@@ -66,6 +66,7 @@ MAX_HARD_TEST_BUDGET_EUR = Decimal("100")
 MAX_HARD_ORDER_NOTIONAL_EUR = Decimal("100")
 MAX_HARD_DAILY_LOSS_EUR = Decimal("25")
 MAX_OPEN_POSITIONS = 2
+DEFAULT_MAX_SIGNAL_AGE_SECONDS = 7200
 
 FORBIDDEN_ENV_NAMES = {
     "BINANCE_API_KEY",
@@ -641,10 +642,46 @@ def _daily_closed_loss(root: Path) -> Decimal:
     return loss
 
 
+def _closed_source_trade_ids(rows: list[dict[str, str]]) -> set[str]:
+    return {
+        trade_id
+        for row in rows
+        if (trade_id := _source_trade_id(row)) and _source_event_type(row) == "EXIT"
+    }
+
+
+def _signal_age_seconds(ts: datetime | None) -> float | None:
+    if ts is None:
+        return None
+    return max(0.0, (_now_dt() - ts.astimezone(timezone.utc)).total_seconds())
+
+
+def _max_signal_age_seconds() -> int:
+    try:
+        return int(os.getenv("RTS_LIVE_CANARY_MAX_SIGNAL_AGE_SECONDS", str(DEFAULT_MAX_SIGNAL_AGE_SECONDS)) or DEFAULT_MAX_SIGNAL_AGE_SECONDS)
+    except Exception:
+        return DEFAULT_MAX_SIGNAL_AGE_SECONDS
+
+
+def _current_price_resolves_entry_before_fill(candidate: dict[str, Any], price: Decimal) -> str:
+    target = _parse_decimal(str(candidate.get("target_reference", "")), "0")
+    stop = _parse_decimal(str(candidate.get("stop_reference", "")), "0")
+    direction = str(candidate.get("direction", "long")).lower()
+    if direction not in {"long", "buy", ""}:
+        return "spot_live_canary_rejects_short_or_non_long"
+    if target > 0 and price >= target:
+        return "blocked_late_entry_target_already_reached"
+    if stop > 0 and price <= stop:
+        return "blocked_late_entry_stop_already_reached"
+    return ""
+
+
 def _candidate_rows(root: Path, source_ledger: Path, *, allow_backlog: bool, lookback_hours: int, symbol_allowlist: set[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
     rows = _read_csv(source_ledger)
     activation = _activation_timestamp(root, rows, allow_backlog)
     cutoff = _now_dt() - timedelta(hours=lookback_hours) if lookback_hours > 0 else None
+    max_signal_age_seconds = _max_signal_age_seconds()
+    closed_trade_ids = _closed_source_trade_ids(rows)
     existing_order_rows = _read_csv(_paths(root)["order_ledger"])
     processed = {row.get("source_trade_id", "") for row in existing_order_rows if row.get("source_trade_id")}
     candidates: list[dict[str, Any]] = []
@@ -664,8 +701,12 @@ def _candidate_rows(root: Path, source_ledger: Path, *, allow_backlog: bool, loo
             reason = "missing_trade_id"
         elif trade_id in processed:
             reason = "already_processed"
+        elif trade_id in closed_trade_ids:
+            reason = "blocked_late_entry_shadow_trade_already_closed"
         elif ts is None:
             reason = "invalid_timestamp"
+        elif max_signal_age_seconds > 0 and (age := _signal_age_seconds(ts)) is not None and age > max_signal_age_seconds:
+            reason = "blocked_late_entry_signal_age_exceeded"
         elif activation is not None and ts <= activation:
             reason = "before_or_at_live_canary_activation_checkpoint"
         elif cutoff is not None and ts < cutoff:
@@ -1140,6 +1181,9 @@ def _submit_entry(root: Path, client: BinanceLiveSpotClient, manifest: dict[str,
     exchange_info = client.exchange_info(symbol)
     rules = parse_symbol_rules(exchange_info, symbol)
     price = client.ticker_price(symbol)
+    price_resolution_reason = _current_price_resolves_entry_before_fill(candidate, price)
+    if price_resolution_reason:
+        raise BinanceLiveSpotSafetyError(price_resolution_reason)
     quantity = quantity_for_notional(max_order, price, rules)
     estimated_notional = quantity * price
     if estimated_notional > max_order:

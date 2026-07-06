@@ -1,10 +1,10 @@
 [Unit]
-Description=Run RTS guarded USDC live canary every 5 minutes
+Description=Run RTS guarded USDC live canary every 1 minute
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=5min
-AccuracySec=30s
+OnUnitActiveSec=1min
+AccuracySec=10s
 Persistent=true
 Unit=rts-live-canary-usdc.service
 

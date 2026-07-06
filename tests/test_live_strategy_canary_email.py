@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from structural_compounding_lab.execution.live_strategy_canary_bridge import (
     _append_csv,
+    _candidate_rows,
     _entry_email,
     _exit_email,
     _open_position_exposure_quote,
@@ -251,3 +252,99 @@ def test_append_csv_rotates_legacy_schema_before_writing_current_header(tmp_path
     legacy = list((tmp_path / "ledger").glob("live_canary_roundtrips.legacy_schema_mismatch_*.csv"))
     assert len(legacy) == 1
     assert legacy[0].read_text(encoding="utf-8").splitlines()[0] == "created_at,source_trade_id,symbol"
+
+
+def test_candidate_rows_blocks_entry_when_shadow_exit_already_exists(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("RTS_LIVE_CANARY_MAX_SIGNAL_AGE_SECONDS", "0")
+    source = tmp_path / "source.csv"
+    source.write_text(
+        "trade_id,symbol,event_type,direction,decision_slot,entry_price,initial_stop,exit_price,setup_class,convexity_label,trade_triggered\n"
+        "XRPUSDT-55,XRPUSDT,ENTRY,long,2026-07-06T14:00:00,1.116,1.1095,1.1236,A,elite_convexity,true\n"
+        "XRPUSDT-55,XRPUSDT,EXIT,long,2026-07-06T15:00:00,1.116,1.1095,1.1236,A,elite_convexity,true\n",
+        encoding="utf-8",
+    )
+
+    candidates, skipped, source_rows = _candidate_rows(
+        tmp_path,
+        source,
+        allow_backlog=True,
+        lookback_hours=0,
+        symbol_allowlist={"XRPUSDT"},
+    )
+
+    assert source_rows == 2
+    assert candidates == []
+    assert any(row["source_trade_id"] == "XRPUSDT-55" and row["skip_reason"] == "blocked_late_entry_shadow_trade_already_closed" for row in skipped)
+
+
+def test_submit_entry_blocks_when_current_price_already_reached_target(tmp_path, monkeypatch) -> None:
+    def fake_guard(signal, *, thresholds=None, **kwargs):
+        return GuardDecision(
+            accepted=True,
+            classification="TEST_GUARD_ACCEPTED",
+            source_symbol=signal.source_symbol,
+            execution_symbol="ADAUSDC",
+            side=signal.side,
+            reasons=[],
+            metrics={"patience": {"attempt_count": 1, "delay_seconds": 0}},
+            order_allowed_after_guard=True,
+        )
+
+    class FakeClient:
+        orders_created = 0
+
+        def exchange_info(self, symbol):
+            return {
+                "symbols": [
+                    {
+                        "symbol": symbol,
+                        "baseAsset": "ADA",
+                        "quoteAsset": "USDC",
+                        "filters": [
+                            {"filterType": "LOT_SIZE", "stepSize": "0.1", "minQty": "0.1"},
+                            {"filterType": "PRICE_FILTER", "tickSize": "0.0001"},
+                            {"filterType": "MIN_NOTIONAL", "minNotional": "5"},
+                        ],
+                    }
+                ]
+            }
+
+        def ticker_price(self, symbol):
+            return Decimal("0.56")
+
+        def create_order(self, intent, client_order_id):
+            self.orders_created += 1
+            raise AssertionError("order should not be created")
+
+    monkeypatch.setattr(
+        "structural_compounding_lab.execution.live_strategy_canary_bridge.evaluate_usdt_signal_to_usdc_execution_guard_with_patience",
+        fake_guard,
+    )
+
+    try:
+        _submit_entry(
+            tmp_path,
+            FakeClient(),
+            {
+                "max_open_positions": 2,
+                "max_test_budget_eur": "100",
+                "max_order_notional_eur": "47.50",
+                "max_daily_loss_eur": "25",
+                "max_account_capital_eur": "150",
+            },
+            {
+                "symbol": "ADAUSDT",
+                "source_timestamp": "2026-07-06T11:00:00+00:00",
+                "source_trade_id": "ADAUSDT-77",
+                "entry_reference": "0.50",
+                "stop_reference": "0.49",
+                "target_reference": "0.55",
+                "setup_class": "A",
+                "convexity_label": "elite_convexity",
+                "conviction_tier": "elite",
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        assert "blocked_late_entry_target_already_reached" in str(exc)
+    else:
+        raise AssertionError("expected target already reached block")
